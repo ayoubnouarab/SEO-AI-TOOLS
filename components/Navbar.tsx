@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, FileText, CheckSquare, BookOpen } from 'lucide-react';
+import { Layout, FileText, CheckSquare, BookOpen, History, Image, Video, Mic } from 'lucide-react';
 
 interface NavbarProps {
   activeTab: string;
@@ -11,6 +11,10 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
     { id: 'editor', label: 'Editor & Generator', icon: <FileText size={18} /> },
     { id: 'guidelines', label: 'SEO Guidelines', icon: <BookOpen size={18} /> },
     { id: 'checklist', label: 'Validation Checklist', icon: <CheckSquare size={18} /> },
+    { id: 'history', label: 'Article History', icon: <History size={18} /> },
+    { id: 'image-gen', label: 'Image Generator', icon: <Image size={18} /> },
+    { id: 'video-gen', label: 'Video Generator', icon: <Video size={18} /> },
+    { id: 'audio-gen', label: 'Audio Generator', icon: <Mic size={18} /> },
   ];
 
   return (
@@ -25,7 +29,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab }) => {
         </div>
       </div>
       
-      <nav className="flex-1 p-4 space-y-2">
+      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
         {navItems.map((item) => (
           <button
             key={item.id}

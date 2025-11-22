@@ -1,7 +1,10 @@
+
 export enum ArticleType {
   PILLAR = 'PILLAR',
   SATELLITE = 'SATELLITE'
 }
+
+export type AIProvider = 'GEMINI' | 'OPENAI' | 'CLAUDE';
 
 export interface SEOConfig {
   topic: string;
@@ -9,7 +12,10 @@ export interface SEOConfig {
   mainKeyword: string;
   secondaryKeywords: string[];
   type: ArticleType;
+  provider: AIProvider; // New field for selecting the AI model
   relatedPillarTopic?: string; // If type is satellite
+  satelliteThemes?: string[]; // Optional: For Pillar article structure alignment
+  apiKey?: string; // Optional API Key for external providers
 }
 
 export interface ArticleVersion {

@@ -1,21 +1,32 @@
-import React, { useState, useEffect } from 'react';
-import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion } from '../types';
-import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche } from '../services/geminiService';
-import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider } from '../types';
+import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent } from '../services/geminiService';
+import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle } from 'lucide-react';
 import { SeoChecklist } from './SeoChecklist';
 
-export const Editor: React.FC = () => {
+interface EditorProps {
+  articles: GeneratedContent[];
+  setArticles: React.Dispatch<React.SetStateAction<GeneratedContent[]>>;
+}
+
+export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
   const [config, setConfig] = useState<SEOConfig>({
     topic: '',
     audience: 'Salma, 28 ans, freelance, manque de temps',
     mainKeyword: '',
     secondaryKeywords: [],
     type: ArticleType.SATELLITE,
+    provider: 'GEMINI', // Default
     relatedPillarTopic: ''
   });
 
+  // API Keys State
+  const [apiKeys, setApiKeys] = useState<{OPENAI: string, CLAUDE: string}>({
+    OPENAI: '',
+    CLAUDE: ''
+  });
+
   const [mode, setMode] = useState<'SINGLE' | 'CLUSTER'>('SINGLE');
-  const [generatedArticles, setGeneratedArticles] = useState<GeneratedContent[]>([]);
   const [activeArticleId, setActiveArticleId] = useState<string | null>(null);
   
   const [isGenerating, setIsGenerating] = useState(false);
@@ -26,11 +37,25 @@ export const Editor: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
 
+  // View Mode State
+  const [viewMode, setViewMode] = useState<'PREVIEW' | 'EDIT'>('PREVIEW');
+
+  // Rewrite State
+  const [showRewriteModal, setShowRewriteModal] = useState(false);
+  const [selectionRange, setSelectionRange] = useState<{start: number, end: number} | null>(null);
+  const [selectedText, setSelectedText] = useState('');
+  const [rewriteTone, setRewriteTone] = useState('Casual & Direct');
+  const [rewriteLength, setRewriteLength] = useState('Standard (Maintain Length)');
+  const [isRewriting, setIsRewriting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   // Niche Idea State
   const [nicheInput, setNicheInput] = useState('');
   const [categoryInput, setCategoryInput] = useState('');
-  const [subCategoryInput, setSubCategoryInput] = useState('');
+  const [subNicheInput, setSubNicheInput] = useState('');
+  const [microNicheInput, setMicroNicheInput] = useState('');
   const [isSuggesting, setIsSuggesting] = useState(false);
+  const [topicSuggestions, setTopicSuggestions] = useState<string[]>([]);
 
   // Image Generation State
   const [showImageModal, setShowImageModal] = useState(false);
@@ -43,7 +68,7 @@ export const Editor: React.FC = () => {
   const [showHistory, setShowHistory] = useState(false);
 
   // Derived state for the currently viewed article
-  const currentArticle = generatedArticles.find(a => a.id === activeArticleId) || null;
+  const currentArticle = articles.find(a => a.id === activeArticleId) || null;
 
   // Detect images in current article whenever it changes
   useEffect(() => {
@@ -66,7 +91,7 @@ export const Editor: React.FC = () => {
 
   // Helper to save current state to history
   const saveToHistory = (articleId: string, note: string) => {
-    setGeneratedArticles(prev => prev.map(article => {
+    setArticles(prev => prev.map(article => {
       if (article.id === articleId) {
         const newVersion: ArticleVersion = {
           id: crypto.randomUUID(),
@@ -89,7 +114,7 @@ export const Editor: React.FC = () => {
     // Save current as history before restoring? Yes, to avoid losing latest work.
     saveToHistory(currentArticle.id, "Auto-save before restore");
 
-    setGeneratedArticles(prev => prev.map(article => {
+    setArticles(prev => prev.map(article => {
       if (article.id === currentArticle.id) {
         return {
           ...article,
@@ -105,16 +130,26 @@ export const Editor: React.FC = () => {
   const handleSuggestTopic = async () => {
     if (!nicheInput) return;
     setIsSuggesting(true);
-    addLog(`Analyzing niche "${nicheInput}", category "${categoryInput}"${subCategoryInput ? `, sub-category "${subCategoryInput}"` : ''} for topic ideas...`);
+    setTopicSuggestions([]);
+    addLog(`Analyzing niche "${nicheInput}" for suggestions...`);
     try {
-      const topic = await suggestTopicFromNiche(nicheInput, categoryInput, subCategoryInput);
-      setConfig(prev => ({ ...prev, topic: topic }));
-      addLog(`Topic found: "${topic}"`, 'success');
+      const topics = await suggestTopicFromNiche(nicheInput, categoryInput, subNicheInput, microNicheInput);
+      if (Array.isArray(topics) && topics.length > 0) {
+        setTopicSuggestions(topics);
+        addLog(`Found ${topics.length} potential topics!`, 'success');
+      } else {
+         addLog('No topics found.', 'error');
+      }
     } catch (error) {
-      addLog('Failed to suggest topic.', 'error');
+      addLog('Failed to suggest topics.', 'error');
     } finally {
       setIsSuggesting(false);
     }
+  };
+
+  const selectSuggestedTopic = (topic: string) => {
+     setConfig(prev => ({ ...prev, topic: topic }));
+     addLog(`Selected topic: "${topic}"`, 'success');
   };
 
   const handleResearch = async () => {
@@ -140,17 +175,24 @@ export const Editor: React.FC = () => {
     }
   };
 
+  const getActiveApiKey = () => {
+    if (config.provider === 'OPENAI') return apiKeys.OPENAI;
+    if (config.provider === 'CLAUDE') return apiKeys.CLAUDE;
+    return undefined;
+  };
+
   const handleGenerateSingle = async () => {
      setIsGenerating(true);
      setReviewResult(null);
-     addLog('Generating single article...');
+     addLog(`Generating single article using ${config.provider}...`);
      try {
-       const result = await generateArticleContent(config);
-       setGeneratedArticles(prev => [result, ...prev]);
+       const apiKey = getActiveApiKey();
+       const result = await generateArticleContent({ ...config, apiKey });
+       setArticles(prev => [result, ...prev]);
        setActiveArticleId(result.id);
        addLog('Article generated successfully!', 'success');
-     } catch (error) {
-       addLog('Generation failed.', 'error');
+     } catch (error: any) {
+       addLog(`Generation failed: ${error.message}`, 'error');
      } finally {
        setIsGenerating(false);
      }
@@ -181,20 +223,26 @@ export const Editor: React.FC = () => {
       let count = 0;
       const newArticles: GeneratedContent[] = [];
 
+      // Extract satellite themes for alignment
+      const satelliteThemes = plan.satellites.map(s => s.title);
+      const apiKey = getActiveApiKey();
+
       for (const task of queue) {
         count++;
-        addLog(`Generating ${count}/7: ${task.type} - "${task.title}"...`);
+        addLog(`Generating ${count}/7: ${task.type} - "${task.title}" with ${config.provider}...`);
         
         const article = await generateArticleContent({
           ...config,
+          apiKey, // Pass API key for external providers
           type: task.type,
           mainKeyword: task.keyword,
           topic: task.title, // Use specific title as topic
-          relatedPillarTopic: task.related
+          relatedPillarTopic: task.related,
+          satelliteThemes: task.type === ArticleType.PILLAR ? satelliteThemes : undefined
         });
 
         newArticles.push(article);
-        setGeneratedArticles(prev => [...prev, article]);
+        setArticles(prev => [...prev, article]);
         if (count === 1) setActiveArticleId(article.id); // Set first one as active immediately
       }
 
@@ -222,6 +270,55 @@ export const Editor: React.FC = () => {
     }
   };
 
+  const handleTextSelection = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const target = e.currentTarget;
+    if (target.selectionStart !== target.selectionEnd) {
+      setSelectionRange({ start: target.selectionStart, end: target.selectionEnd });
+      setSelectedText(target.value.substring(target.selectionStart, target.selectionEnd));
+    } else {
+      setSelectionRange(null);
+      setSelectedText('');
+    }
+  };
+
+  const handleRewrite = async () => {
+    if (!currentArticle || !selectedText) return;
+    
+    setIsRewriting(true);
+    saveToHistory(currentArticle.id, "Before manual rewrite");
+    
+    try {
+      const newText = await rewriteContent(selectedText, rewriteTone, rewriteLength);
+      
+      if (newText && selectionRange) {
+        const before = currentArticle.content.substring(0, selectionRange.start);
+        const after = currentArticle.content.substring(selectionRange.end);
+        const updatedContent = before + newText + after;
+        
+        setArticles(prev => prev.map(a => 
+          a.id === currentArticle.id ? { ...a, content: updatedContent } : a
+        ));
+        
+        addLog('Content rewritten successfully', 'success');
+        setShowRewriteModal(false);
+        setSelectionRange(null);
+        setSelectedText('');
+      }
+    } catch (e) {
+      addLog('Failed to rewrite text', 'error');
+    } finally {
+      setIsRewriting(false);
+    }
+  };
+
+  const handleManualEdit = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (!currentArticle) return;
+    const newContent = e.target.value;
+    setArticles(prev => prev.map(a => 
+      a.id === currentArticle.id ? { ...a, content: newContent } : a
+    ));
+  };
+
   const handleGenerateRealImage = async (imgData: {alt: string, url: string, index: number}) => {
     if (!currentArticle) return;
     
@@ -232,16 +329,12 @@ export const Editor: React.FC = () => {
     addLog(`Generating real image (${selectedAspectRatio}) for: "${imgData.alt}"...`);
     
     try {
-      const base64Image = await generateRealImage(imgData.alt, selectedAspectRatio);
+      // Ensure Niche context is passed to prompt by prepending topic
+      const prompt = `Article: ${currentArticle.title} - ${imgData.alt}`;
+      const base64Image = await generateRealImage(prompt, selectedAspectRatio);
       
       // Replace in content
-      // We need to be careful to replace only the specific instance if alt texts are same
-      // A safer way with index matching:
       let occurrence = 0;
-      // Note: We use currentArticle.content here, but we need to ensure we aren't using stale closure if we didn't use functional update in setGeneratedArticles, 
-      // but since we're inside the function scope and currentArticle is a dependency or derived from state, it's generally fine if we update state correctly.
-      // However, to be safe with the saveToHistory call above (which is async state update), we should calculate new content first then update.
-      
       const newContent = currentArticle.content.replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, url) => {
         if (occurrence === imgData.index) {
           occurrence++;
@@ -252,7 +345,7 @@ export const Editor: React.FC = () => {
       });
 
       // Update state
-      setGeneratedArticles(prev => prev.map(a => a.id === currentArticle.id ? { ...a, content: newContent } : a));
+      setArticles(prev => prev.map(a => a.id === currentArticle.id ? { ...a, content: newContent } : a));
       addLog('Image generated and injected!', 'success');
     } catch (error) {
       addLog('Image generation failed.', 'error');
@@ -281,7 +374,9 @@ export const Editor: React.FC = () => {
       const results = await Promise.all(targets.map(async (img) => {
         try {
           addLog(`Generating image: "${img.alt}"...`);
-          const base64 = await generateRealImage(img.alt, selectedAspectRatio);
+          // Ensure Niche context is passed to prompt by prepending topic
+          const prompt = `Article: ${currentArticle.title} - ${img.alt}`;
+          const base64 = await generateRealImage(prompt, selectedAspectRatio);
           return { index: img.index, base64, success: true };
         } catch (e) {
           addLog(`Failed to generate image for "${img.alt}"`, 'error');
@@ -301,7 +396,7 @@ export const Editor: React.FC = () => {
         return match;
       });
 
-      setGeneratedArticles(prev => prev.map(a => a.id === currentArticle.id ? { ...a, content: newContent } : a));
+      setArticles(prev => prev.map(a => a.id === currentArticle.id ? { ...a, content: newContent } : a));
       addLog('Batch generation completed!', 'success');
 
     } catch (error) {
@@ -436,19 +531,43 @@ ${currentArticle.content}`;
                 <input
                   type="text"
                   className="w-full p-2 border border-blue-200 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                  placeholder="Sub-Category (e.g., 'AI Writing')"
-                  value={subCategoryInput}
-                  onChange={(e) => setSubCategoryInput(e.target.value)}
+                  placeholder="Sub-Niche"
+                  value={subNicheInput}
+                  onChange={(e) => setSubNicheInput(e.target.value)}
+                />
+                <input
+                  type="text"
+                  className="w-full p-2 border border-blue-200 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="Micro-Niche"
+                  value={microNicheInput}
+                  onChange={(e) => setMicroNicheInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSuggestTopic()}
                 />
-                <button 
-                  onClick={handleSuggestTopic}
-                  disabled={isSuggesting || !nicheInput}
-                  className="px-3 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm font-medium text-xs whitespace-nowrap"
-                >
-                  {isSuggesting ? <RefreshCw className="animate-spin" size={14} /> : 'Get Topic'}
-                </button>
               </div>
+              <button 
+                onClick={handleSuggestTopic}
+                disabled={isSuggesting || !nicheInput}
+                className="w-full py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm font-medium text-xs whitespace-nowrap flex justify-center gap-2"
+              >
+                {isSuggesting ? <RefreshCw className="animate-spin" size={14} /> : 'Get Topic Ideas (4)'}
+              </button>
+              
+              {/* Suggested Topics Grid */}
+              {topicSuggestions.length > 0 && (
+                <div className="grid grid-cols-1 gap-2 mt-2 animate-fade-in">
+                   <p className="text-[10px] text-blue-500 font-bold uppercase">Select a topic:</p>
+                   {topicSuggestions.map((topic, idx) => (
+                     <button
+                       key={idx}
+                       onClick={() => selectSuggestedTopic(topic)}
+                       className="text-left text-xs p-2 bg-white border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-400 transition-all flex items-start gap-2 group"
+                     >
+                       <ArrowRightCircle size={12} className="mt-0.5 text-blue-400 group-hover:text-blue-600 shrink-0" />
+                       <span className="text-slate-700 group-hover:text-blue-800">{topic}</span>
+                     </button>
+                   ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -473,6 +592,52 @@ ${currentArticle.content}`;
               </button>
             </div>
             <p className="text-[10px] text-slate-400 mt-1">Tip: Click Search to auto-fill audience & keywords.</p>
+          </div>
+          
+          {/* AI Provider Selection */}
+          <div className="bg-slate-50 p-3 rounded border border-slate-100">
+            <label className="block text-xs font-semibold text-slate-500 uppercase mb-2 flex items-center gap-1">
+              <Cpu size={12} /> AI Writer Provider
+            </label>
+            <select 
+              className="w-full p-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-2"
+              value={config.provider}
+              onChange={(e) => setConfig({ ...config, provider: e.target.value as AIProvider })}
+            >
+              <option value="GEMINI">Google Gemini (Default)</option>
+              <option value="OPENAI">ChatGPT</option>
+              <option value="CLAUDE">Claude (3.5 Sonnet)</option>
+            </select>
+            
+            {config.provider === 'OPENAI' && (
+              <div className="animate-fade-in">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1 flex items-center gap-1">
+                  <Key size={10} /> OpenAI API Key
+                </label>
+                <input 
+                  type="password"
+                  placeholder="sk-..."
+                  className="w-full p-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                  value={apiKeys.OPENAI}
+                  onChange={(e) => setApiKeys({...apiKeys, OPENAI: e.target.value})}
+                />
+              </div>
+            )}
+
+            {config.provider === 'CLAUDE' && (
+              <div className="animate-fade-in">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1 flex items-center gap-1">
+                  <Key size={10} /> Claude API Key
+                </label>
+                <input 
+                  type="password"
+                  placeholder="sk-ant-..."
+                  className="w-full p-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                  value={apiKeys.CLAUDE}
+                  onChange={(e) => setApiKeys({...apiKeys, CLAUDE: e.target.value})}
+                />
+              </div>
+            )}
           </div>
 
           {mode === 'SINGLE' && (
@@ -565,7 +730,7 @@ ${currentArticle.content}`;
       {/* Content Preview Area */}
       <div className="flex-1 bg-slate-50 flex h-full overflow-hidden relative">
         {/* Cluster/Article Navigation Sidebar */}
-        {generatedArticles.length > 0 && (
+        {articles.length > 0 && (
           <div className="w-64 bg-white border-r border-slate-200 overflow-y-auto shrink-0">
              <div className="p-4 border-b border-slate-100">
                 <h3 className="font-bold text-slate-700 flex items-center gap-2">
@@ -573,7 +738,7 @@ ${currentArticle.content}`;
                 </h3>
              </div>
              <div className="divide-y divide-slate-50">
-               {generatedArticles.map(article => (
+               {articles.map(article => (
                  <button
                    key={article.id}
                    onClick={() => setActiveArticleId(article.id)}
@@ -615,20 +780,28 @@ ${currentArticle.content}`;
                 </div>
               </div>
               <div className="flex gap-2 border-t pt-4">
+                {/* View Mode Toggles */}
+                <div className="flex bg-slate-100 rounded p-1 mr-4">
+                   <button
+                     onClick={() => setViewMode('PREVIEW')}
+                     className={`flex items-center gap-2 px-3 py-1 text-xs font-bold rounded transition-all ${viewMode === 'PREVIEW' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}
+                   >
+                     <Eye size={14} /> Preview
+                   </button>
+                   <button
+                     onClick={() => setViewMode('EDIT')}
+                     className={`flex items-center gap-2 px-3 py-1 text-xs font-bold rounded transition-all ${viewMode === 'EDIT' ? 'bg-white text-blue-600 shadow' : 'text-slate-500'}`}
+                   >
+                     <Edit size={14} /> Edit Raw
+                   </button>
+                </div>
+
                 <button 
                   onClick={() => setShowImageModal(true)}
                   className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 rounded transition-colors"
                 >
                   <Palette size={16} />
                   Image Studio
-                </button>
-
-                <button 
-                  onClick={handleCopy}
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
-                >
-                  {copied ? <Check size={16} className="text-green-600"/> : <Copy size={16} />}
-                  {copied ? 'Copied' : 'Copy MD'}
                 </button>
 
                 <button 
@@ -689,13 +862,34 @@ ${currentArticle.content}`;
               </div>
             )}
 
-            {/* Main Content Editor (Visual Preview) */}
-            <div className="bg-white rounded-lg shadow-sm border border-slate-200 min-h-[500px] p-8">
-               {/* Use DangerouslySetInnerHTML to render the preview with images */}
-               <div 
-                 className="prose max-w-none font-sans text-slate-800"
-                 dangerouslySetInnerHTML={renderMarkdownPreview(currentArticle.content)}
-               />
+            {/* Main Content Editor */}
+            <div className="bg-white rounded-lg shadow-sm border border-slate-200 min-h-[600px] p-8 relative">
+               {/* Rewrite Toolbar Floating */}
+               {viewMode === 'EDIT' && selectionRange && (
+                 <div className="absolute top-4 right-4 z-10 flex gap-2 animate-fade-in">
+                    <button
+                      onClick={() => setShowRewriteModal(true)}
+                      className="bg-indigo-600 text-white px-4 py-2 rounded-full shadow-lg hover:bg-indigo-700 flex items-center gap-2 text-sm font-bold"
+                    >
+                      <Sparkles size={14} /> Rewrite Selection
+                    </button>
+                 </div>
+               )}
+
+               {viewMode === 'PREVIEW' ? (
+                 <div 
+                   className="prose max-w-none font-sans text-slate-800"
+                   dangerouslySetInnerHTML={renderMarkdownPreview(currentArticle.content)}
+                 />
+               ) : (
+                 <textarea
+                   ref={textareaRef}
+                   className="w-full h-[600px] font-mono text-sm p-4 outline-none text-slate-800 resize-none"
+                   value={currentArticle.content}
+                   onChange={handleManualEdit}
+                   onSelect={handleTextSelection}
+                 />
+               )}
             </div>
           </div>
         ) : (
@@ -712,6 +906,64 @@ ${currentArticle.content}`;
         )}
         </div>
       </div>
+
+      {/* Rewrite Modal */}
+      {showRewriteModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/20 backdrop-blur-sm">
+           <div className="bg-white rounded-lg shadow-xl p-6 w-96 border border-slate-200 animate-fade-in">
+              <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <Sparkles className="text-indigo-600" size={20} /> Rewrite Text
+              </h3>
+              
+              <div className="space-y-4 mb-6">
+                 <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tone</label>
+                    <select 
+                      className="w-full p-2 border rounded text-sm"
+                      value={rewriteTone}
+                      onChange={(e) => setRewriteTone(e.target.value)}
+                    >
+                      <option>Casual & Direct</option>
+                      <option>Professional & Formal</option>
+                      <option>Simple & Beginner Friendly</option>
+                      <option>Authoritative & Expert</option>
+                    </select>
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Length & Depth</label>
+                    <select 
+                      className="w-full p-2 border rounded text-sm"
+                      value={rewriteLength}
+                      onChange={(e) => setRewriteLength(e.target.value)}
+                    >
+                      <option>Concise (Short & Punchy)</option>
+                      <option>Standard (Maintain Length)</option>
+                      <option>Detailed (Expand & Deepen)</option>
+                    </select>
+                 </div>
+                 <div className="bg-slate-50 p-3 rounded text-xs text-slate-500 italic border border-slate-100 max-h-24 overflow-y-auto">
+                    "{selectedText.substring(0, 100)}..."
+                 </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                 <button 
+                   onClick={() => setShowRewriteModal(false)}
+                   className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded"
+                 >
+                   Cancel
+                 </button>
+                 <button 
+                   onClick={handleRewrite}
+                   disabled={isRewriting}
+                   className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-2"
+                 >
+                   {isRewriting ? <RefreshCw className="animate-spin" size={14}/> : 'Rewrite'}
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
 
       {/* Image Studio Modal */}
       {showImageModal && currentArticle && (
@@ -842,7 +1094,7 @@ ${currentArticle.content}`;
                            <div className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-slate-300 group-hover:bg-blue-400 transition-colors"></div>
                            <div className="mb-1 flex justify-between items-start">
                              <span className="text-xs font-bold text-slate-500 uppercase">
-                               {new Date(version.timestamp).toLocaleTimeString()} <span className="font-normal opacity-75">({new Date(version.timestamp).toLocaleDateString()})</span>
+                               {new Date(version.timestamp).toLocaleTimeString()}<span className="font-normal opacity-75">({new Date(version.timestamp).toLocaleDateString()})</span>
                              </span>
                            </div>
                            <p className="text-sm font-medium text-slate-800 mb-2">{version.note || "Auto-save"}</p>

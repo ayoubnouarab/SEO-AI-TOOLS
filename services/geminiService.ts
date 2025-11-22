@@ -1,8 +1,14 @@
-import { GoogleGenAI, Type, Schema, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, Type, Schema, GenerateContentResponse, Modality } from "@google/genai";
 import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult } from '../types';
 
+// --- GOOGLE GEMINI SETUP (Research, Planning, Images, Reviewing) ---
 // Initialize the client with the environment variable
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+// --- EXTERNAL API SETUP (For Article Generation Only) ---
+// PLACE YOUR KEYS HERE OR IN ENV VARIABLES
+const OPENAI_API_KEY_ENV = process.env.OPENAI_API_KEY;
+const CLAUDE_API_KEY_ENV = process.env.CLAUDE_API_KEY;
 
 const SYSTEM_INSTRUCTION_AYOUB = `
 You are Ayoub Nouar, a 31-year-old SEO Strategist specialized in "AI Tools". You have a bachelor's degree (Bac+3).
@@ -24,37 +30,54 @@ You are strictly judged on the quality, humanity, and depth of your writing.
 4.  **SEO MASTERY**:
     -   You must aim for a SurferSEO score of > 85.
     -   This means: High keyword density (1.5%), NLP/LSI keywords used naturally, Main keyword in H1, First 100 words, and H2s.
+5.  **SEO SCORING PROTOCOL**:
+    -   Avoid pronouns (It, They) when referring to the main keyword. Repeat the keyword explicitly.
+    -   Use the exact secondary keywords provided. Do not change their form.
 
 *** VISUALS ***
 -   Always include the 4 requested images (1 Cover, 3 Body).
 -   Use "Chart Graphique" style for body images.
 `;
 
-export const suggestTopicFromNiche = async (niche: string, category: string, subCategory: string = ''): Promise<string> => {
+export const suggestTopicFromNiche = async (niche: string, category: string, subNiche: string = '', microNiche: string = ''): Promise<string[]> => {
   const prompt = `
     Act as an expert SEO Strategist.
     My niche is: "${niche}".
     Broad Category: "${category}".
-    ${subCategory ? `Specific Sub-Category: "${subCategory}".` : ''}
+    ${subNiche ? `Specific Sub-Niche: "${subNiche}".` : ''}
+    ${microNiche ? `Micro-Niche Context: "${microNiche}".` : ''}
     
-    Generate ONE single, high-potential, SEO-optimized "Main Topic" title for a comprehensive Pillar article in this specific category hierarchy.
-    The topic should be:
-    1. Search-intent driven (something people actually search for).
-    2. Specific enough to target a clear audience.
+    Generate exactly 4 distinct, high-potential "Main Topic" titles for a Pillar or Authority article.
+    Provide variety in angles (e.g., "Ultimate Guide", "Comparative Listicle", "Strategic How-To", "Trend Analysis").
+    
+    The topics must be:
+    1. Search-intent driven (high volume potential).
+    2. Specific to the provided niche hierarchy.
     3. Catchy but professional.
     
-    Return ONLY the topic title string. Do not include quotes or extra text.
+    Return ONLY a JSON array of strings. No markdown.
   `;
+
+  const schema: Schema = {
+    type: Type.ARRAY,
+    items: { type: Type.STRING }
+  };
 
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+      }
     });
-    return response.text?.trim() || "";
+    
+    return JSON.parse(response.text || "[]");
   } catch (error) {
     console.error("Error suggesting topic:", error);
-    throw error;
+    // Fallback if JSON parsing fails, return empty array or try to extract lines
+    return [];
   }
 };
 
@@ -105,6 +128,7 @@ export const generateClusterPlan = async (topic: string): Promise<ClusterPlan> =
     2. Six (6) SATELLITE article titles that answer specific questions related to the pillar, each with a unique main keyword.
     
     Ensure the satellites are distinct and cover different search intents.
+    Derive the satellite titles DIRECTLY from potential H2 sections of the Pillar to ensure perfect topic cluster alignment.
   `;
 
   const schema: Schema = {
@@ -144,9 +168,152 @@ export const generateClusterPlan = async (topic: string): Promise<ClusterPlan> =
   }
 };
 
+// --- AI GENERATION LOGIC ROUTER ---
+
 export const generateArticleContent = async (config: SEOConfig): Promise<GeneratedContent> => {
+  const prompt = buildArticlePrompt(config);
+  let text = "";
+
+  try {
+    if (config.provider === 'OPENAI') {
+      try {
+        console.log("Generating with OpenAI (ChatGPT)...");
+        text = await generateWithOpenAI(prompt, config.apiKey);
+      } catch (openAiError: any) {
+        console.warn(`OpenAI generation failed: ${openAiError.message}. Falling back to Gemini.`);
+        // Fallback to Gemini
+        console.log("Fallback: Generating with Google Gemini...");
+        text = await generateWithGemini(prompt, config);
+      }
+    } else if (config.provider === 'CLAUDE') {
+      try {
+        console.log("Generating with Anthropic (Claude)...");
+        text = await generateWithClaude(prompt, config.apiKey);
+      } catch (claudeError: any) {
+        console.warn(`Claude generation failed: ${claudeError.message}. Falling back to Gemini.`);
+        // Fallback to Gemini
+        console.log("Fallback: Generating with Google Gemini...");
+        text = await generateWithGemini(prompt, config);
+      }
+    } else {
+      console.log("Generating with Google Gemini...");
+      text = await generateWithGemini(prompt, config);
+    }
+
+    if (!text) throw new Error("No content generated from provider " + config.provider);
+
+    // Parse the response
+    const { metadata, content } = parseArticleResponse(text, config.topic);
+
+    // Run auto-validation
+    const validation = validateContentLocal(content, config.mainKeyword, config.secondaryKeywords);
+
+    return {
+      id: crypto.randomUUID(),
+      type: config.type,
+      title: metadata.title,
+      slug: metadata.slug,
+      metaDescription: metadata.metaDescription,
+      content: content,
+      validation,
+      history: [] 
+    } as GeneratedContent;
+
+  } catch (error) {
+    console.error(`Error generating article with ${config.provider}:`, error);
+    throw error;
+  }
+};
+
+// --- PROVIDER SPECIFIC IMPLEMENTATIONS ---
+
+const generateWithGemini = async (prompt: string, config: SEOConfig): Promise<string> => {
   // Using Pro for Pillar to handle the large token output requirement better
   const modelId = config.type === ArticleType.PILLAR ? 'gemini-3-pro-preview' : 'gemini-2.5-flash';
+  
+  const response = await ai.models.generateContent({
+    model: modelId,
+    contents: prompt,
+    config: {
+      systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
+      temperature: 0.7,
+    },
+  });
+  return response.text || "";
+};
+
+const generateWithOpenAI = async (prompt: string, apiKey?: string): Promise<string> => {
+  const key = apiKey || OPENAI_API_KEY_ENV;
+  if (!key || key.includes("YOUR_OPENAI")) {
+    throw new Error("OpenAI API Key is missing. Please set OPENAI_API_KEY.");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o", // Standard ChatGPT
+      messages: [
+        { role: "system", content: SYSTEM_INSTRUCTION_AYOUB },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
+};
+
+const generateWithClaude = async (prompt: string, apiKey?: string): Promise<string> => {
+  const key = apiKey || CLAUDE_API_KEY_ENV;
+  if (!key || key.includes("YOUR_CLAUDE")) {
+     throw new Error("Claude API Key is missing. Please set CLAUDE_API_KEY.");
+  }
+
+  // Note: Calling Anthropic directly from browser often triggers CORS. 
+  // Ideally this runs on a backend. For this demo, we assume a compatible environment.
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "dangerously-allow-browser": "true" // Required for direct browser calls if no proxy
+    },
+    body: JSON.stringify({
+      model: "claude-3-5-sonnet-20240620",
+      max_tokens: 8192,
+      system: SYSTEM_INSTRUCTION_AYOUB,
+      messages: [
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.7
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  return data.content?.[0]?.text || "";
+};
+
+// --- HELPER FUNCTIONS ---
+
+const buildArticlePrompt = (config: SEOConfig): string => {
+  // Calculate Target Repetition
+  const targetRepetition = config.type === ArticleType.PILLAR ? '60' : '15';
 
   const structureInstruction = config.type === ArticleType.PILLAR 
     ? `
@@ -159,24 +326,27 @@ export const generateArticleContent = async (config: SEOConfig): Promise<Generat
     6. **Common Mistakes**: What to avoid.
     7. **FAQ**: Answer 3 real user questions.
     
+    **ALIGNMENT**: Use these specific themes for your H2 headers (derived from Satellite topics) to ensure cluster alignment:
+    ${config.satelliteThemes ? config.satelliteThemes.map(t => `- ${t}`).join('\n') : 'No specific alignment required.'}
+
     **LENGTH GOAL**: Write as much as possible (aim for 5000 words). Do not stop early. Be exhaustive.
     ` 
     : `
     **SATELLITE STRUCTURE**:
+    - Context: This is a satellite article for the Pillar Topic: "${config.relatedPillarTopic}".
     - Answer the specific question immediately.
     - Give actionable steps.
     - Link back to the main topic context.
     `;
 
-  const prompt = `
+  return `
     Write a world-class ${config.type} article in Native American English.
     
     **Topic**: ${config.topic}
     **Audience**: ${config.audience} (Write specifically for them)
     **Main Keyword**: ${config.mainKeyword}
-    **Secondary Keywords**: ${config.secondaryKeywords.join(', ')}
-    ${config.relatedPillarTopic ? `**Related Pillar**: ${config.relatedPillarTopic} (Link to it)` : ''}
-
+    **Secondary Keywords (MANDATORY VOCABULARY LIST)**: ${config.secondaryKeywords.join(', ')}
+    
     ${structureInstruction}
 
     ### *** MANDATORY COMPLIANCE CHECKLIST (VERIFY BEFORE GENERATING) ***
@@ -185,26 +355,34 @@ export const generateArticleContent = async (config: SEOConfig): Promise<Generat
     [STRUCTURE]
     - [ ] H1 matches EXACTLY: "${config.topic.toLowerCase()}"
     - [ ] Coherent H2/H3 hierarchy (Sentence case only)
-    - [ ] Internal Link included to Pillar/Satellite
+    - [ ] Internal Link included to Pillar/Satellite (Use placeholder [Internal Link](#))
     
-    [SEO - SURFER SCORE > 85]
-    - [ ] Main Keyword in H1, First 100 words (Intro), and H2 headers.
-    - [ ] Balanced Density (1.5% - 2%) - NO Keyword Stuffing.
-    - [ ] All 3-5 Secondary Keywords integrated naturally.
-    - [ ] URL/Slug is short and optimized.
+    [SEO - SCORE 100%]
+    - [ ] Main Keyword in H1, First Sentence, and H2 headers.
+    - [ ] **DENSITY TARGET**: You must use the main keyword "${config.mainKeyword}" at least ${targetRepetition} times.
+    - [ ] **LSI USAGE**: You MUST use every single secondary keyword at least once.
     
     [QUALITY]
     - [ ] Images have optimized ALT text based on the H2 context.
-    - [ ] **SENTENCE LENGTH**: STRICTLY < 20 WORDS per sentence.
+    - [ ] **SENTENCE LENGTH**: STRICTLY < 20 WORDS per sentence. RED FLAG if longer.
     - [ ] **TONE**: 100% Human, American, Non-Robotic.
+
+    ### CRITICAL 100% SCORE EXECUTION PLAN:
+    1. Insert Main Keyword in the very first sentence.
+    2. Insert Main Keyword in the H1.
+    3. Insert Main Keyword in at least 50% of H2s.
+    4. Write exactly 100 words of Intro before the first H2.
+    5. Use "###" for sub-sections.
+    6. Insert \`[Internal Link](#)\` explicitly in the text.
 
     ### IMAGES (MANDATORY - 4 TOTAL):
     Generate exactly 4 images using Markdown syntax.
     The ALT TEXT must be a detailed prompt describing the image based on the H2 section it is inside (Context-Aware).
-    1. **Cover**: After H1. \`![Detailed prompt for cover image about ${config.mainKeyword}](https://placehold.co/1200x600/EEE/31343C?text=${encodeURIComponent(config.mainKeyword.replace(/\s/g, '+'))})\`
-    2. **Body 1**: Inside first major section. \`![Detailed prompt relevant to this specific H2 section](https://placehold.co/800x400/EEE/31343C?text=Chart+1)\` (Wide)
-    3. **Body 2**: Middle of article. \`![Detailed prompt relevant to this specific H2 section](https://placehold.co/600x600/EEE/31343C?text=Diagram)\` (Square)
-    4. **Body 3**: Near end. \`![Detailed prompt relevant to this specific H2 section](https://placehold.co/1000x500/EEE/31343C?text=Infographic)\` (Large)
+    Prepend "Article: ${config.topic} - " to every Alt text to ensure niche relevance.
+    1. **Cover**: After H1. \`![Article: ${config.topic} - Detailed prompt for cover image about ${config.mainKeyword}](https://placehold.co/1200x600/EEE/31343C?text=${encodeURIComponent(config.mainKeyword.replace(/\s/g, '+'))})\`
+    2. **Body 1**: Inside first major section. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/800x400/EEE/31343C?text=Wide+Chart)\` (Wide)
+    3. **Body 2**: Middle of article. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/600x600/EEE/31343C?text=Square+Diagram)\` (Square)
+    4. **Body 3**: Near end. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/1000x600/EEE/31343C?text=Large+Infographic)\` (Large)
     
     OUTPUT:
     Raw Markdown starting with this JSON block:
@@ -222,59 +400,31 @@ export const generateArticleContent = async (config: SEOConfig): Promise<Generat
     
     [Content...]
   `;
+};
 
-  try {
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
-        temperature: 0.7,
-      },
-    });
+const parseArticleResponse = (text: string, topic: string) => {
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+    
+  let metadata = {
+    title: topic,
+    slug: topic.toLowerCase().replace(/\s+/g, '-'),
+    metaDescription: `A comprehensive guide about ${topic}.`
+  };
+  
+  let content = text;
 
-    const text = response.text;
-    if (!text) throw new Error("No content generated");
-    
-    // Parse the split response (Metadata JSON + Markdown Content)
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-    
-    let metadata = {
-      title: config.topic,
-      slug: config.topic.toLowerCase().replace(/\s+/g, '-'),
-      metaDescription: `A comprehensive guide about ${config.topic}.`
-    };
-    
-    let content = text;
-
-    if (jsonMatch) {
-      try {
-        const parsedMeta = JSON.parse(jsonMatch[1]);
-        metadata = { ...metadata, ...parsedMeta };
-        // Remove the JSON block from the content
-        content = text.replace(jsonMatch[0], '').trim();
-      } catch (e) {
-        console.warn("Failed to parse metadata JSON from response", e);
-      }
+  if (jsonMatch) {
+    try {
+      const parsedMeta = JSON.parse(jsonMatch[1]);
+      metadata = { ...metadata, ...parsedMeta };
+      // Remove the JSON block from the content
+      content = text.replace(jsonMatch[0], '').trim();
+    } catch (e) {
+      console.warn("Failed to parse metadata JSON from response", e);
     }
-
-    // Run auto-validation
-    const validation = validateContentLocal(content, config.mainKeyword, config.secondaryKeywords);
-
-    return {
-      id: crypto.randomUUID(),
-      type: config.type,
-      title: metadata.title,
-      slug: metadata.slug,
-      metaDescription: metadata.metaDescription,
-      content: content,
-      validation,
-      history: [] // Initialize empty history
-    } as GeneratedContent;
-  } catch (error) {
-    console.error("Error generating article:", error);
-    throw error;
   }
+
+  return { metadata, content };
 };
 
 const validateContentLocal = (content: string, mainKeyword: string, secondaryKeywords: string[]): ValidationResult => {
@@ -289,8 +439,8 @@ const validateContentLocal = (content: string, mainKeyword: string, secondaryKey
   // Check Structure
   const structureValid = content.includes('## ') && content.includes('### ');
   
-  // Check Intro (Approximate check for keyword in first 500 chars)
-  const introText = content.substring(0, 500).toLowerCase();
+  // Check Intro (Check first 800 chars)
+  const introText = content.substring(0, 800).toLowerCase();
   const introStructure = introText.includes(lowerKeyword);
 
   // Keyword Density & Count
@@ -306,28 +456,38 @@ const validateContentLocal = (content: string, mainKeyword: string, secondaryKey
   // Secondary Keywords
   let secCount = 0;
   secondaryKeywords.forEach(sk => {
+    // Simple includes check is insufficient for strict scoring, but okay for local check
     if (lowerContent.includes(sk.toLowerCase())) secCount++;
   });
 
-  // Links
-  const linksPresent = content.includes('](');
+  // Links - Check for Markdown links
+  const linksPresent = /\[.*?\]\(.*?\)/.test(content);
   
   // Sentence Length Check (Sample check on first paragraph)
-  // Note: Regex is approximate for sentence splitting
   const sentences = content.split(/[.!?]+/);
-  const avgSentenceLength = sentences.slice(0, 10).reduce((acc, s) => acc + s.split(' ').length, 0) / 10;
-  const shortSentences = avgSentenceLength < 25; // Allowing slightly more flexibility in calc, but prompt is strict 20
+  // Filter empty strings
+  const validSentences = sentences.filter(s => s.trim().length > 0);
+  const avgSentenceLength = validSentences.slice(0, 10).reduce((acc, s) => acc + s.trim().split(/\s+/).length, 0) / Math.min(10, validSentences.length || 1);
+  const shortSentences = avgSentenceLength < 25; 
 
-  // SEO Score Calculation (Simple Algorithm for Checklist)
+  // SEO Score Calculation
   let seoScore = 0;
+  
+  // 1. Basics (30 pts)
   if (h1Present) seoScore += 10;
+  if (wordCount > 800) seoScore += 10;
+  if (structureValid) seoScore += 10;
+
+  // 2. Keyword Optimization (40 pts)
   if (keywordInH1) seoScore += 15;
   if (introStructure) seoScore += 10;
-  if (keywordDensity === 'Good') seoScore += 15;
-  if (secCount >= 3) seoScore += 15;
-  if (structureValid) seoScore += 10;
-  if (linksPresent) seoScore += 10;
-  if (wordCount > 800) seoScore += 15;
+  if (keywordDensity === 'Good' || density > 0.5) seoScore += 15; // Reward meeting the minimum
+
+  // 3. Advanced (30 pts)
+  if (secCount >= secondaryKeywords.length && secondaryKeywords.length > 0) seoScore += 15; // Used all secondary
+  else if (secCount >= 3) seoScore += 10;
+  
+  if (linksPresent) seoScore += 15;
   
   // Cap at 100
   seoScore = Math.min(100, seoScore);
@@ -343,6 +503,40 @@ const validateContentLocal = (content: string, mainKeyword: string, secondaryKey
     linksPresent,
     seoScore
   };
+};
+
+export const rewriteContent = async (text: string, tone: string, length: string): Promise<string> => {
+  const prompt = `
+    Act as Ayoub Nouar (SEO Expert). Rewrite the following text selection.
+    
+    **Original Text**: "${text}"
+    
+    **Goal**: Rewrite it to be 100% human, American English.
+    **Target Tone**: ${tone}
+    **Target Length**: ${length}
+    **Constraints**: 
+    - Max 20 words per sentence.
+    - No robotic words ("delve", "realm").
+    - Maintain formatting (bolding, markdown) if present.
+    
+    Return ONLY the rewritten text. No quotes, no "Here is the rewritten text".
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
+        temperature: 0.7,
+      },
+    });
+    
+    return response.text?.trim() || text;
+  } catch (error) {
+    console.error("Error rewriting content:", error);
+    throw error;
+  }
 };
 
 export const reviewArticleContent = async (content: string, config: SEOConfig): Promise<string> => {
@@ -402,6 +596,150 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
     return `data:image/jpeg;base64,${base64String}`;
   } catch (error) {
     console.error("Error generating real image:", error);
+    throw error;
+  }
+};
+
+export const generateVideo = async (prompt: string): Promise<string> => {
+  try {
+    let operation = await ai.models.generateVideos({
+      model: 'veo-3.1-fast-generate-preview',
+      prompt: prompt,
+      config: {
+        numberOfVideos: 1,
+        resolution: '720p',
+        aspectRatio: '16:9'
+      }
+    });
+    
+    // Poll until complete
+    while (!operation.done) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      operation = await ai.operations.getVideosOperation({operation: operation});
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) throw new Error("Video generation failed: No URI returned.");
+
+    // Fetch the video bytes using the API Key
+    const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+
+  } catch (error) {
+    console.error("Error generating video:", error);
+    throw error;
+  }
+};
+
+// Helper function to inject WAV header (24kHz Mono 16-bit)
+const injectWavHeader = (bytes: Uint8Array, sampleRate: number = 24000): Blob => {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+
+  // RIFF chunk descriptor
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + bytes.length, true); // File size - 8
+  writeString(view, 8, 'WAVE');
+
+  // fmt sub-chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, 1, true); // NumChannels (1 for Mono)
+  view.setUint32(24, sampleRate, true); // SampleRate
+  view.setUint32(28, sampleRate * 2, true); // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
+  view.setUint16(32, 2, true); // BlockAlign (NumChannels * BitsPerSample/8)
+  view.setUint16(34, 16, true); // BitsPerSample (16)
+
+  // data sub-chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, bytes.length, true); // Subchunk2Size
+
+  return new Blob([header, bytes], { type: 'audio/wav' });
+};
+
+const writeString = (view: DataView, offset: number, string: string) => {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+};
+
+const decodeBase64ToBytes = (base64: string) => {
+    const binaryString = atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+};
+
+export const generateSpeech = async (text: string, voice: string = 'Kore'): Promise<string> => {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: text }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voice },
+            },
+        },
+      },
+    });
+
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) throw new Error("No audio data generated");
+
+    // Inject WAV header for proper playback
+    const bytes = decodeBase64ToBytes(base64Audio);
+    const blob = injectWavHeader(bytes, 24000); // gemini-2.5-flash-preview-tts output is 24kHz
+
+    return URL.createObjectURL(blob);
+
+  } catch (error) {
+    console.error("Error generating speech:", error);
+    throw error;
+  }
+};
+
+export const generateAudioMimic = async (audioBase64: string, textToSay: string): Promise<string> => {
+  try {
+    // Use Gemini 2.5 Flash which handles multimodal inputs (Audio In -> Audio Out)
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: "audio/mp3", // Assuming generic audio type, usually mp3/wav/aac are supported
+              data: audioBase64
+            }
+          },
+          {
+            text: `Listen to the voice in the audio file. Respond by speaking the following text, matching the tone and pacing: "${textToSay}"`
+          }
+        ]
+      },
+      config: {
+        // Request Audio output
+        responseModalities: [Modality.AUDIO],
+      },
+    });
+
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) throw new Error("No audio output generated");
+
+    // Gemini 2.5 Flash audio out is typically 24kHz
+    const bytes = decodeBase64ToBytes(base64Audio);
+    const blob = injectWavHeader(bytes, 24000);
+
+    return URL.createObjectURL(blob);
+
+  } catch (error) {
+    console.error("Error generating audio mimic:", error);
     throw error;
   }
 };
