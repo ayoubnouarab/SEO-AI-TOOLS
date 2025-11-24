@@ -19,41 +19,54 @@ if (typeof process === 'undefined') {
 // We initialize it only when a function is called.
 
 const getApiKey = (): string => {
-  // Vercel/Vite requires EXPLICIT access to import.meta.env.VITE_... for static replacement.
-  // We check all possible variations.
-  const meta = import.meta as any;
+  // CRITICAL FIX FOR VERCEL:
+  // Vercel/Vite requires EXPLICIT, DIRECT access to import.meta.env.VITE_API_KEY for static replacement to work.
+  // Do NOT alias import.meta to a variable.
   
-  // 1. Try standard Vite way (Most likely for Vercel)
-  if (meta.env && meta.env.VITE_API_KEY) {
-    return meta.env.VITE_API_KEY;
+  try {
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+    }
+  } catch (e) {
+    // Ignore error if import.meta is not available
   }
   
-  // 2. Try process.env (Node/Compat)
-  if (process.env && process.env.VITE_API_KEY) {
-    return process.env.VITE_API_KEY;
-  }
-  
-  // 3. Fallback for older setups
-  if (meta.env && meta.env.API_KEY) {
-    return meta.env.API_KEY;
-  }
-
-  // 4. Try standard process.env.API_KEY
-  if (process.env && process.env.API_KEY) {
-    return process.env.API_KEY;
-  }
+  // Fallbacks for local dev or Node environments
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+      if (process.env.API_KEY) return process.env.API_KEY;
+    }
+  } catch (e) {}
 
   return "";
 };
 
 const getExternalKey = (provider: 'OPENAI' | 'CLAUDE'): string => {
-  const meta = import.meta as any;
-  if (provider === 'OPENAI') {
-    return (meta.env && meta.env.VITE_OPENAI_API_KEY) || process.env.VITE_OPENAI_API_KEY || "";
-  }
-  if (provider === 'CLAUDE') {
-    return (meta.env && meta.env.VITE_CLAUDE_API_KEY) || process.env.VITE_CLAUDE_API_KEY || "";
-  }
+  try {
+    if (provider === 'OPENAI') {
+      // @ts-ignore
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPENAI_API_KEY) {
+        // @ts-ignore
+        return import.meta.env.VITE_OPENAI_API_KEY;
+      }
+      if (typeof process !== 'undefined' && process.env && process.env.VITE_OPENAI_API_KEY) {
+        return process.env.VITE_OPENAI_API_KEY;
+      }
+    }
+    if (provider === 'CLAUDE') {
+      // @ts-ignore
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_CLAUDE_API_KEY) {
+        // @ts-ignore
+        return import.meta.env.VITE_CLAUDE_API_KEY;
+      }
+      if (typeof process !== 'undefined' && process.env && process.env.VITE_CLAUDE_API_KEY) {
+        return process.env.VITE_CLAUDE_API_KEY;
+      }
+    }
+  } catch (e) {}
   return "";
 };
 
@@ -70,7 +83,7 @@ const getAIClient = (overrideKey?: string): GoogleGenAI => {
   if (!aiClientInstance) {
     const key = getApiKey();
     if (!key) {
-      console.warn("No API Key found in environment variables (VITE_API_KEY or API_KEY).");
+      console.warn("No API Key found. Ensure VITE_API_KEY is set in Vercel Environment Variables.");
       // We return a dummy instance to allow UI to render, but calls will fail gracefully
       return new GoogleGenAI({ apiKey: "MISSING_KEY_PLACEHOLDER" });
     }
