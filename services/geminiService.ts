@@ -614,24 +614,63 @@ export const reviewArticleContent = async (content: string, config: SEOConfig): 
 
 export const generateRealImage = async (prompt: string, aspectRatio: string = '16:9'): Promise<string> => {
   const client = getAIClient();
-  const models = ['imagen-3.0-generate-001', 'gemini-2.5-flash-image', 'imagen-4.0-generate-001'];
   let lastError;
-  for (const model of models) {
-    try {
-      console.log(`Attempting image generation with model: ${model}`);
-      const response = await client.models.generateImages({
-        model: model,
-        prompt: prompt,
-        config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/jpeg' },
-      });
-      const base64String = response.generatedImages?.[0]?.image?.imageBytes;
-      if (base64String) return `data:image/jpeg;base64,${base64String}`;
-    } catch (error) {
-      console.warn(`Model ${model} failed:`, error);
-      lastError = error;
-    }
+
+  // 1. Try Imagen 3 (Standard)
+  try {
+    console.log("Attempting image generation with model: imagen-3.0-generate-001");
+    const response = await client.models.generateImages({
+      model: 'imagen-3.0-generate-001',
+      prompt: prompt,
+      config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/jpeg' },
+    });
+    const base64String = response.generatedImages?.[0]?.image?.imageBytes;
+    if (base64String) return `data:image/jpeg;base64,${base64String}`;
+  } catch (error) {
+    console.warn("Imagen 3 failed:", error);
+    lastError = error;
   }
-  throw lastError || new Error("Image generation failed");
+
+  // 2. Try Gemini 2.5 Flash Image (Fallback using generateContent)
+  // NOTE: This model does NOT use generateImages.
+  try {
+    console.log("Attempting image generation with model: gemini-2.5-flash-image");
+    const response = await client.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: prompt }] },
+      // Nano Banana infers image generation and returns inlineData
+    });
+
+    if (response.candidates && response.candidates.length > 0) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+           return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+        }
+      }
+    }
+    // If no image part found
+    console.warn("Flash Image returned no inlineData.");
+  } catch (error) {
+    console.warn("Gemini Flash Image failed:", error);
+    lastError = error;
+  }
+
+  // 3. Try Imagen 4 (Premium Fallback)
+  try {
+    console.log("Attempting image generation with model: imagen-4.0-generate-001");
+    const response = await client.models.generateImages({
+      model: 'imagen-4.0-generate-001',
+      prompt: prompt,
+      config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/jpeg' },
+    });
+    const base64String = response.generatedImages?.[0]?.image?.imageBytes;
+    if (base64String) return `data:image/jpeg;base64,${base64String}`;
+  } catch (error) {
+    console.warn("Imagen 4 failed:", error);
+    lastError = error;
+  }
+
+  throw lastError || new Error("Image generation failed on all models.");
 };
 
 export const generateVideo = async (prompt: string): Promise<string> => {
