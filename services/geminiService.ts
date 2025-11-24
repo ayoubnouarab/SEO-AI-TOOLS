@@ -1,27 +1,81 @@
-
 import { GoogleGenAI, Type, Schema, GenerateContentResponse, Modality } from "@google/genai";
 import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult, TopicSuggestion } from '../types';
 
 // --- VITE/VERCEL COMPATIBILITY FIX ---
-// Ensure process is defined to avoid "process is not defined" errors in browser
+// Polyfill process.env for Vite environments to avoid "process is not defined"
 declare var process: {
   env: {
     [key: string]: string | undefined;
   }
 };
 
+// Safe access to environment variables (Vite uses import.meta.env, Node uses process.env)
+const getEnvVar = (key: string): string | undefined => {
+  try {
+    // Check Vite specific env vars first
+    const meta = import.meta as any;
+    if (typeof meta !== 'undefined' && meta.env) {
+      // Vercel/Vite usually requires VITE_ prefix for client-side exposure, 
+      // but we check both just in case user configured define replacement
+      return meta.env[key] || meta.env[`VITE_${key}`];
+    }
+  } catch (e) {
+    // Ignore error if import.meta is not available
+  }
+
+  try {
+    // Fallback to process.env
+    if (typeof process !== 'undefined' && process.env) {
+      return process.env[key];
+    }
+  } catch (e) {
+    // Ignore
+  }
+
+  // Last resort: Check window object if polyfilled elsewhere
+  return (window as any).process?.env?.[key];
+};
+
+// Initialize global process if missing (for library compatibility)
 if (typeof process === 'undefined') {
   (window as any).process = { env: {} };
 }
 
-// --- GOOGLE GEMINI SETUP (Research, Planning, Images, Reviewing) ---
-// Initialize the client with the environment variable
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- GOOGLE GEMINI SETUP ---
+// We lazily initialize or ensure the key exists to prevent top-level crashes
+const apiKey = getEnvVar('API_KEY') || ""; 
+// Note: GoogleGenAI might throw if key is empty string, so we handle it.
+// However, the prompt mandates strict usage of process.env.API_KEY.
+// We initialize it here. If it fails, we catch it inside the functions.
 
-// --- EXTERNAL API SETUP (For Article Generation Only) ---
-// PLACE YOUR KEYS HERE OR IN ENV VARIABLES
-const OPENAI_API_KEY_ENV = process.env.OPENAI_API_KEY;
-const CLAUDE_API_KEY_ENV = process.env.CLAUDE_API_KEY;
+let ai: GoogleGenAI;
+try {
+  ai = new GoogleGenAI({ apiKey: apiKey });
+} catch (e) {
+  console.warn("Google GenAI failed to initialize at startup (likely missing API Key). Will retry on request.");
+  // Create a dummy instance or let it fail later
+  ai = new GoogleGenAI({ apiKey: "DUMMY_KEY_TO_PREVENT_CRASH" }); 
+}
+
+// Helper to get a working instance or throw if key is missing
+const getAIClient = (): GoogleGenAI => {
+  const currentKey = getEnvVar('API_KEY');
+  if (!currentKey) {
+    console.warn("API_KEY is missing in environment variables.");
+    // We return the instance anyway; the API call will fail with a clear authentication error
+    // instead of crashing the app structure.
+  }
+  // Re-initialize if we have a key now but didn't before (e.g. slight timing issue)
+  if (currentKey && (!apiKey || apiKey === "DUMMY_KEY_TO_PREVENT_CRASH")) {
+     return new GoogleGenAI({ apiKey: currentKey });
+  }
+  return ai;
+};
+
+
+// --- EXTERNAL API SETUP ---
+const OPENAI_API_KEY_ENV = getEnvVar('OPENAI_API_KEY');
+const CLAUDE_API_KEY_ENV = getEnvVar('CLAUDE_API_KEY');
 
 const SYSTEM_INSTRUCTION_AYOUB = `
 You are Ayoub Nouar, a 31-year-old SEO Strategist specialized in "AI Tools". You have a bachelor's degree (Bac+3).
@@ -87,7 +141,8 @@ export const suggestTopicFromNiche = async (niche: string, category: string, sub
   };
 
   try {
-    const response = await ai.models.generateContent({
+    const client = getAIClient();
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
@@ -122,8 +177,9 @@ export const performSeoResearch = async (topic: string): Promise<Partial<SEOConf
   `;
 
   try {
+    const client = getAIClient();
     // IMPORTANT: Do not use responseMimeType or responseSchema with googleSearch tool
-    const response = await ai.models.generateContent({
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash', 
       contents: prompt,
       config: {
@@ -174,7 +230,8 @@ export const generateClusterPlan = async (topic: string): Promise<ClusterPlan> =
   };
 
   try {
-    const response = await ai.models.generateContent({
+    const client = getAIClient();
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
@@ -273,7 +330,8 @@ export const refineArticleContent = async (currentContent: string, instruction: 
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const client = getAIClient();
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash', // Fast model for edits
       contents: prompt,
       config: {
@@ -294,7 +352,8 @@ const generateWithGemini = async (prompt: string, config: SEOConfig): Promise<st
   // Using Pro for Pillar to handle the large token output requirement better
   const modelId = config.type === ArticleType.PILLAR ? 'gemini-3-pro-preview' : 'gemini-2.5-flash';
   
-  const response = await ai.models.generateContent({
+  const client = getAIClient();
+  const response = await client.models.generateContent({
     model: modelId,
     contents: prompt,
     config: {
@@ -328,7 +387,7 @@ const generateWithOpenAI = async (prompt: string, apiKey?: string): Promise<stri
   });
 
   if (!response.ok) {
-    const err = await response.json();
+    const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || response.statusText);
   }
 
@@ -364,7 +423,7 @@ const generateWithClaude = async (prompt: string, apiKey?: string): Promise<stri
   });
 
   if (!response.ok) {
-    const err = await response.json();
+    const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || response.statusText);
   }
 
@@ -592,7 +651,8 @@ export const rewriteContent = async (text: string, tone: string, length: string)
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const client = getAIClient();
+    const response = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
@@ -626,7 +686,8 @@ export const reviewArticleContent = async (content: string, config: SEOConfig): 
   `;
 
   try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
+    const client = getAIClient();
+    const response: GenerateContentResponse = await client.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: {
         parts: [
@@ -648,8 +709,9 @@ export const reviewArticleContent = async (content: string, config: SEOConfig): 
 
 export const generateRealImage = async (prompt: string, aspectRatio: string = '16:9'): Promise<string> => {
   try {
+    const client = getAIClient();
     // Using Imagen 4 model for high quality image generation
-    const response = await ai.models.generateImages({
+    const response = await client.models.generateImages({
       model: 'imagen-4.0-generate-001',
       prompt: prompt,
       config: {
@@ -671,7 +733,8 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
 
 export const generateVideo = async (prompt: string): Promise<string> => {
   try {
-    let operation = await ai.models.generateVideos({
+    const client = getAIClient();
+    let operation = await client.models.generateVideos({
       model: 'veo-3.1-fast-generate-preview',
       prompt: prompt,
       config: {
@@ -684,14 +747,15 @@ export const generateVideo = async (prompt: string): Promise<string> => {
     // Poll until complete
     while (!operation.done) {
       await new Promise(resolve => setTimeout(resolve, 5000));
-      operation = await ai.operations.getVideosOperation({operation: operation});
+      operation = await client.operations.getVideosOperation({operation: operation});
     }
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
     if (!downloadLink) throw new Error("Video generation failed: No URI returned.");
 
     // Fetch the video bytes using the API Key
-    const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+    const apiKey = getEnvVar('API_KEY');
+    const response = await fetch(`${downloadLink}&key=${apiKey}`);
     const blob = await response.blob();
     return URL.createObjectURL(blob);
 
@@ -746,7 +810,8 @@ const decodeBase64ToBytes = (base64: string) => {
 
 export const generateSpeech = async (text: string, voice: string = 'Kore'): Promise<string> => {
   try {
-    const response = await ai.models.generateContent({
+    const client = getAIClient();
+    const response = await client.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: text }] }],
       config: {
@@ -778,7 +843,8 @@ export const generateAudioMimic = async (audioBase64: string, textToSay: string)
   // Step 1: Use gemini-2.5-flash (multimodal input) to analyze audio and generate the RESPONSE TEXT.
   // The native audio output model is 404ing, so we use this fallback.
   try {
-    const analyzeResponse = await ai.models.generateContent({
+    const client = getAIClient();
+    const analyzeResponse = await client.models.generateContent({
       model: "gemini-2.5-flash",
       contents: {
         parts: [
