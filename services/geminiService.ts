@@ -1,5 +1,18 @@
+
 import { GoogleGenAI, Type, Schema, GenerateContentResponse, Modality } from "@google/genai";
-import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult } from '../types';
+import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult, TopicSuggestion } from '../types';
+
+// --- VITE/VERCEL COMPATIBILITY FIX ---
+// Ensure process is defined to avoid "process is not defined" errors in browser
+declare var process: {
+  env: {
+    [key: string]: string | undefined;
+  }
+};
+
+if (typeof process === 'undefined') {
+  (window as any).process = { env: {} };
+}
 
 // --- GOOGLE GEMINI SETUP (Research, Planning, Images, Reviewing) ---
 // Initialize the client with the environment variable
@@ -39,7 +52,13 @@ You are strictly judged on the quality, humanity, and depth of your writing.
 -   Use "Chart Graphique" style for body images.
 `;
 
-export const suggestTopicFromNiche = async (niche: string, category: string, subNiche: string = '', microNiche: string = ''): Promise<string[]> => {
+// Helper to clean JSON string from Markdown code blocks
+const cleanJson = (text: string): string => {
+  if (!text) return "{}";
+  return text.replace(/```json/g, '').replace(/```/g, '').trim();
+};
+
+export const suggestTopicFromNiche = async (niche: string, category: string, subNiche: string = '', microNiche: string = ''): Promise<TopicSuggestion[]> => {
   const prompt = `
     Act as an expert SEO Strategist.
     My niche is: "${niche}".
@@ -50,17 +69,21 @@ export const suggestTopicFromNiche = async (niche: string, category: string, sub
     Generate exactly 4 distinct, high-potential "Main Topic" titles for a Pillar or Authority article.
     Provide variety in angles (e.g., "Ultimate Guide", "Comparative Listicle", "Strategic How-To", "Trend Analysis").
     
-    The topics must be:
-    1. Search-intent driven (high volume potential).
-    2. Specific to the provided niche hierarchy.
-    3. Catchy but professional.
+    For each topic, estimate a "Viral/SEO Score" from 0 to 100 based on search intent potential and click-through probability.
     
-    Return ONLY a JSON array of strings. No markdown.
+    Return ONLY a JSON array of objects.
   `;
 
   const schema: Schema = {
     type: Type.ARRAY,
-    items: { type: Type.STRING }
+    items: { 
+      type: Type.OBJECT,
+      properties: {
+        topic: { type: Type.STRING },
+        score: { type: Type.INTEGER, description: "Score from 0 to 100" }
+      },
+      required: ["topic", "score"]
+    }
   };
 
   try {
@@ -73,10 +96,11 @@ export const suggestTopicFromNiche = async (niche: string, category: string, sub
       }
     });
     
-    return JSON.parse(response.text || "[]");
+    const cleanedText = cleanJson(response.text || "[]");
+    return JSON.parse(cleanedText);
   } catch (error) {
     console.error("Error suggesting topic:", error);
-    // Fallback if JSON parsing fails, return empty array or try to extract lines
+    // Fallback if JSON parsing fails
     return [];
   }
 };
@@ -110,10 +134,8 @@ export const performSeoResearch = async (topic: string): Promise<Partial<SEOConf
     let text = response.text;
     if (!text) throw new Error("No research data generated");
     
-    // Cleanup potential markdown if model ignores instruction
-    text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    
-    return JSON.parse(text);
+    const cleanedText = cleanJson(text);
+    return JSON.parse(cleanedText);
   } catch (error) {
     console.error("Error researching topic:", error);
     throw error;
@@ -161,7 +183,8 @@ export const generateClusterPlan = async (topic: string): Promise<ClusterPlan> =
       }
     });
 
-    return JSON.parse(response.text || "{}");
+    const cleanedText = cleanJson(response.text || "{}");
+    return JSON.parse(cleanedText);
   } catch (error) {
     console.error("Error generating cluster plan:", error);
     throw error;
@@ -216,11 +239,51 @@ export const generateArticleContent = async (config: SEOConfig): Promise<Generat
       metaDescription: metadata.metaDescription,
       content: content,
       validation,
-      history: [] 
+      history: [],
+      chatHistory: []
     } as GeneratedContent;
 
   } catch (error) {
     console.error(`Error generating article with ${config.provider}:`, error);
+    throw error;
+  }
+};
+
+// --- REFINE ARTICLE (CHATBOT) ---
+export const refineArticleContent = async (currentContent: string, instruction: string): Promise<string> => {
+  const prompt = `
+    Act as Ayoub Nouar (The Author).
+    
+    **CURRENT ARTICLE CONTENT (MARKDOWN):**
+    ${currentContent}
+
+    **USER INSTRUCTION:**
+    "${instruction}"
+
+    **TASK:**
+    Update the article content to satisfy the user instruction.
+    - If they ask to change the tone, rewrite the relevant parts.
+    - If they ask to add a section, add it in the correct place.
+    - If they ask to fix something, fix it.
+    - MAINTAIN all other formatting, images, and headers unless asked to change.
+    - STRICTLY follow the "Max 20 words per sentence" rule for any NEW text.
+
+    **OUTPUT:**
+    Return ONLY the fully updated Markdown content. No conversational filler.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash', // Fast model for edits
+      contents: prompt,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
+      }
+    });
+
+    return response.text || currentContent;
+  } catch (error) {
+    console.error("Error refining article:", error);
     throw error;
   }
 };
@@ -354,6 +417,7 @@ const buildArticlePrompt = (config: SEOConfig): string => {
     
     [STRUCTURE]
     - [ ] H1 matches EXACTLY: "${config.topic.toLowerCase()}"
+    - [ ] Cover Image is IMMEDIATELY after the H1 title.
     - [ ] Coherent H2/H3 hierarchy (Sentence case only)
     - [ ] Internal Link included to Pillar/Satellite (Use placeholder [Internal Link](#))
     
@@ -370,16 +434,21 @@ const buildArticlePrompt = (config: SEOConfig): string => {
     ### CRITICAL 100% SCORE EXECUTION PLAN:
     1. Insert Main Keyword in the very first sentence.
     2. Insert Main Keyword in the H1.
-    3. Insert Main Keyword in at least 50% of H2s.
-    4. Write exactly 100 words of Intro before the first H2.
-    5. Use "###" for sub-sections.
-    6. Insert \`[Internal Link](#)\` explicitly in the text.
+    3. **PLACE COVER IMAGE DIRECTLY AFTER H1**. This is non-negotiable.
+    4. Insert Main Keyword in at least 50% of H2s.
+    5. Write exactly 100 words of Intro before the first H2.
+    6. Use "###" for sub-sections.
+    7. Insert \`[Internal Link](#)\` explicitly in the text.
 
     ### IMAGES (MANDATORY - 4 TOTAL):
     Generate exactly 4 images using Markdown syntax.
     The ALT TEXT must be a detailed prompt describing the image based on the H2 section it is inside (Context-Aware).
     Prepend "Article: ${config.topic} - " to every Alt text to ensure niche relevance.
-    1. **Cover**: After H1. \`![Article: ${config.topic} - Detailed prompt for cover image about ${config.mainKeyword}](https://placehold.co/1200x600/EEE/31343C?text=${encodeURIComponent(config.mainKeyword.replace(/\s/g, '+'))})\`
+    
+    1. **Cover Image**: MUST BE placed immediately after the # H1 Title line (before any paragraph text).
+       Format: \`![COVER: ${config.topic} - Detailed prompt for cover image about ${config.mainKeyword}](https://placehold.co/1200x600/EEE/31343C?text=${encodeURIComponent('COVER: ' + config.mainKeyword.replace(/\s/g, '+'))})\`
+       (Resolution must be 1200x600. Alt text must start with "COVER:").
+    
     2. **Body 1**: Inside first major section. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/800x400/EEE/31343C?text=Wide+Chart)\` (Wide)
     3. **Body 2**: Middle of article. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/600x600/EEE/31343C?text=Square+Diagram)\` (Square)
     4. **Body 3**: Near end. \`![Article: ${config.topic} - Detailed prompt relevant to this specific H2 section](https://placehold.co/1000x600/EEE/31343C?text=Large+Infographic)\` (Large)
@@ -396,9 +465,9 @@ const buildArticlePrompt = (config: SEOConfig): string => {
     
     # ${config.topic.toLowerCase()}
     
-    ![Cover Image](...)
+    ![COVER: ${config.topic}](...)
     
-    [Content...]
+    [Content starts here...]
   `;
 };
 
@@ -706,40 +775,35 @@ export const generateSpeech = async (text: string, voice: string = 'Kore'): Prom
 };
 
 export const generateAudioMimic = async (audioBase64: string, textToSay: string): Promise<string> => {
+  // Step 1: Use gemini-2.5-flash (multimodal input) to analyze audio and generate the RESPONSE TEXT.
+  // The native audio output model is 404ing, so we use this fallback.
   try {
-    // Use Gemini 2.5 Flash which handles multimodal inputs (Audio In -> Audio Out)
-    const response = await ai.models.generateContent({
+    const analyzeResponse = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: {
         parts: [
           {
             inlineData: {
-              mimeType: "audio/mp3", // Assuming generic audio type, usually mp3/wav/aac are supported
+              mimeType: "audio/mp3", // Assuming generic input type
               data: audioBase64
             }
           },
           {
-            text: `Listen to the voice in the audio file. Respond by speaking the following text, matching the tone and pacing: "${textToSay}"`
+            text: `Listen to the voice tone and style in this audio. Then, generate a response text that matches the persona/style but says exactly: "${textToSay}". Return ONLY the text.`
           }
         ]
-      },
-      config: {
-        // Request Audio output
-        responseModalities: [Modality.AUDIO],
-      },
+      }
     });
+    
+    const generatedText = analyzeResponse.text;
+    if (!generatedText) throw new Error("Could not analyze audio or generate text response.");
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) throw new Error("No audio output generated");
-
-    // Gemini 2.5 Flash audio out is typically 24kHz
-    const bytes = decodeBase64ToBytes(base64Audio);
-    const blob = injectWavHeader(bytes, 24000);
-
-    return URL.createObjectURL(blob);
+    // Step 2: Use TTS model to speak that text.
+    // This isn't a true "voice clone" (which requires specific fine-tuning APIs), but mimics the interaction flow.
+    return await generateSpeech(generatedText, 'Puck'); // Defaulting to deep male voice as placeholder, or user preferred.
 
   } catch (error) {
-    console.error("Error generating audio mimic:", error);
+    console.error("Error generating audio mimic (Fallback):", error);
     throw error;
   }
 };

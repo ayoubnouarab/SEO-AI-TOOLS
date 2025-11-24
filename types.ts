@@ -6,6 +6,12 @@ export enum ArticleType {
 
 export type AIProvider = 'GEMINI' | 'OPENAI' | 'CLAUDE';
 
+export interface User {
+  email: string;
+  accessId: string; // The "ID" or password
+  name: string;
+}
+
 export interface SEOConfig {
   topic: string;
   audience: string;
@@ -25,6 +31,13 @@ export interface ArticleVersion {
   note: string; // e.g., "Initial Draft", "Before Image Generation"
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: number;
+}
+
 export interface GeneratedContent {
   id: string;
   type: ArticleType;
@@ -34,6 +47,12 @@ export interface GeneratedContent {
   slug: string;
   validation?: ValidationResult;
   history: ArticleVersion[];
+  chatHistory: ChatMessage[]; // Per-article chat history
+}
+
+export interface TopicSuggestion {
+  topic: string;
+  score: number; // 0-100 SEO Potential
 }
 
 export interface ClusterPlan {

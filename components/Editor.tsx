@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect, useRef } from 'react';
-import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider } from '../types';
-import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent } from '../services/geminiService';
-import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle } from 'lucide-react';
+import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider, TopicSuggestion, ChatMessage } from '../types';
+import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent, refineArticleContent } from '../services/geminiService';
+import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle, MessageSquare, Send, Bot } from 'lucide-react';
 import { SeoChecklist } from './SeoChecklist';
 
 interface EditorProps {
@@ -55,7 +56,7 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
   const [subNicheInput, setSubNicheInput] = useState('');
   const [microNicheInput, setMicroNicheInput] = useState('');
   const [isSuggesting, setIsSuggesting] = useState(false);
-  const [topicSuggestions, setTopicSuggestions] = useState<string[]>([]);
+  const [topicSuggestions, setTopicSuggestions] = useState<TopicSuggestion[]>([]);
 
   // Image Generation State
   const [showImageModal, setShowImageModal] = useState(false);
@@ -67,8 +68,15 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
   // History State
   const [showHistory, setShowHistory] = useState(false);
 
+  // Chatbot Assistant State
+  const [showChat, setShowChat] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatThinking, setIsChatThinking] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
   // Derived state for the currently viewed article
   const currentArticle = articles.find(a => a.id === activeArticleId) || null;
+  const coverImage = detectedImages.length > 0 ? detectedImages[0].url : null;
 
   // Detect images in current article whenever it changes
   useEffect(() => {
@@ -84,6 +92,13 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
       setDetectedImages(images);
     }
   }, [currentArticle]);
+
+  // Scroll chat to bottom
+  useEffect(() => {
+    if (chatScrollRef.current) {
+        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [currentArticle?.chatHistory, showChat]);
 
   const addLog = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
     setLogs(prev => [{ timestamp: Date.now(), text, type }, ...prev]);
@@ -406,6 +421,63 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
     }
   };
 
+  const handleChatSubmit = async () => {
+    if (!currentArticle || !chatInput.trim()) return;
+    
+    const userMsg = chatInput.trim();
+    setChatInput('');
+    setIsChatThinking(true);
+
+    // 1. Add User Message to History
+    const newUserMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        text: userMsg,
+        timestamp: Date.now()
+    };
+
+    setArticles(prev => prev.map(a => a.id === currentArticle.id ? {
+        ...a,
+        chatHistory: [...(a.chatHistory || []), newUserMessage]
+    } : a));
+
+    try {
+        // 2. Save current state for undo
+        saveToHistory(currentArticle.id, `Before chat edit: "${userMsg.substring(0, 15)}..."`);
+
+        // 3. Call AI to refine content
+        const updatedContent = await refineArticleContent(currentArticle.content, userMsg);
+
+        // 4. Update Article Content
+        setArticles(prev => prev.map(a => a.id === currentArticle.id ? {
+            ...a,
+            content: updatedContent,
+            chatHistory: [...(a.chatHistory || []), {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                text: "I've updated the article based on your request.",
+                timestamp: Date.now()
+            }]
+        } : a));
+
+        addLog('Article refined by AI assistant', 'success');
+
+    } catch (e) {
+        addLog('Assistant failed to update article', 'error');
+        setArticles(prev => prev.map(a => a.id === currentArticle.id ? {
+            ...a,
+            chatHistory: [...(a.chatHistory || []), {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                text: "Sorry, I encountered an error while processing your request.",
+                timestamp: Date.now()
+            }]
+        } : a));
+    } finally {
+        setIsChatThinking(false);
+    }
+  };
+
   const handleCopy = () => {
     if (currentArticle) {
       navigator.clipboard.writeText(currentArticle.content);
@@ -556,14 +628,23 @@ ${currentArticle.content}`;
               {topicSuggestions.length > 0 && (
                 <div className="grid grid-cols-1 gap-2 mt-2 animate-fade-in">
                    <p className="text-[10px] text-blue-500 font-bold uppercase">Select a topic:</p>
-                   {topicSuggestions.map((topic, idx) => (
+                   {topicSuggestions.map((suggestion, idx) => (
                      <button
                        key={idx}
-                       onClick={() => selectSuggestedTopic(topic)}
-                       className="text-left text-xs p-2 bg-white border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-400 transition-all flex items-start gap-2 group"
+                       onClick={() => selectSuggestedTopic(suggestion.topic)}
+                       className="text-left text-xs p-2 bg-white border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-400 transition-all flex items-start justify-between group w-full"
                      >
-                       <ArrowRightCircle size={12} className="mt-0.5 text-blue-400 group-hover:text-blue-600 shrink-0" />
-                       <span className="text-slate-700 group-hover:text-blue-800">{topic}</span>
+                       <div className="flex items-start gap-2 flex-1 min-w-0">
+                          <ArrowRightCircle size={12} className="mt-0.5 text-blue-400 group-hover:text-blue-600 shrink-0" />
+                          <span className="text-slate-700 group-hover:text-blue-800 truncate">{suggestion.topic}</span>
+                       </div>
+                       <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ml-2 ${
+                          suggestion.score >= 80 ? 'bg-green-100 text-green-700' :
+                          suggestion.score >= 50 ? 'bg-orange-100 text-orange-700' :
+                          'bg-red-100 text-red-700'
+                       }`}>
+                          {suggestion.score}
+                       </span>
                      </button>
                    ))}
                 </div>
@@ -762,13 +843,23 @@ ${currentArticle.content}`;
         {/* Main Preview */}
         <div className="flex-1 overflow-y-auto p-8">
         {currentArticle ? (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6 pb-32">
             {/* Metadata Card */}
             <div className="bg-white p-6 rounded-lg border border-slate-200 shadow-sm">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div className="md:col-span-2">
                   <span className="text-xs text-slate-400 uppercase font-bold">SEO Title (H1)</span>
-                  <h1 className="text-xl font-bold text-slate-900">{currentArticle.title}</h1>
+                  <h1 className="text-xl font-bold text-slate-900 mb-4">{currentArticle.title}</h1>
+                  
+                  {/* Cover Image Preview Under H1 */}
+                  {coverImage && (
+                     <div className="w-full h-64 bg-slate-100 rounded-lg overflow-hidden border border-slate-200 relative group">
+                        <img src={coverImage} alt="Article Cover" className="w-full h-full object-cover" />
+                        <div className="absolute bottom-2 right-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm">
+                           Cover Image Preview
+                        </div>
+                     </div>
+                  )}
                 </div>
                 <div>
                   <span className="text-xs text-slate-400 uppercase font-bold">Slug</span>
@@ -813,6 +904,14 @@ ${currentArticle.content}`;
                 </button>
 
                 <div className="ml-auto flex items-center gap-2">
+                  <button 
+                    onClick={() => setShowChat(!showChat)}
+                    className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded transition-colors ${showChat ? 'bg-blue-600 text-white' : 'text-blue-600 bg-blue-50 hover:bg-blue-100'}`}
+                  >
+                    <MessageSquare size={16} />
+                    AI Editor
+                  </button>
+
                   <button 
                     onClick={() => setShowHistory(true)}
                     className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
@@ -905,6 +1004,65 @@ ${currentArticle.content}`;
           </div>
         )}
         </div>
+
+        {/* AI Assistant / Chat Panel */}
+        {currentArticle && showChat && (
+            <div className="w-80 bg-white border-l border-slate-200 flex flex-col shadow-xl z-30 animate-slide-in">
+                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                        <Bot size={18} className="text-blue-600" /> AI Assistant
+                    </h3>
+                    <button onClick={() => setShowChat(false)} className="text-slate-400 hover:text-slate-600">
+                        <X size={18} />
+                    </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/50" ref={chatScrollRef}>
+                    {!currentArticle.chatHistory || currentArticle.chatHistory.length === 0 ? (
+                        <div className="text-center py-10 text-slate-400 text-sm">
+                           <p>Ask me to refine, rewrite, or fix anything in the article!</p>
+                        </div>
+                    ) : (
+                        currentArticle.chatHistory.map(msg => (
+                            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[85%] p-3 rounded-lg text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none'}`}>
+                                    {msg.text}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                    {isChatThinking && (
+                        <div className="flex justify-start">
+                           <div className="bg-slate-200 p-3 rounded-lg rounded-bl-none flex gap-1">
+                              <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
+                              <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-75"></div>
+                              <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-150"></div>
+                           </div>
+                        </div>
+                    )}
+                </div>
+                <div className="p-4 border-t border-slate-200 bg-white">
+                    <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Rewrite the intro..."
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSubmit()}
+                          disabled={isChatThinking}
+                        />
+                        <button 
+                          onClick={handleChatSubmit}
+                          disabled={isChatThinking || !chatInput.trim()}
+                          className="p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                        >
+                            <Send size={18} />
+                        </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-2 text-center">Changes are applied automatically.</p>
+                </div>
+            </div>
+        )}
       </div>
 
       {/* Rewrite Modal */}
