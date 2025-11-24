@@ -9,51 +9,42 @@ declare var process: {
   }
 };
 
-// Safe access to environment variables (Vite uses import.meta.env, Node uses process.env)
-const getEnvVar = (key: string): string | undefined => {
-  try {
-    // Check Vite specific env vars first
-    const meta = import.meta as any;
-    if (typeof meta !== 'undefined' && meta.env) {
-      // Vercel/Vite usually requires VITE_ prefix for client-side exposure, 
-      // but we check both just in case user configured define replacement
-      return meta.env[key] || meta.env[`VITE_${key}`];
-    }
-  } catch (e) {
-    // Ignore error if import.meta is not available
-  }
-
-  try {
-    // Fallback to process.env
-    if (typeof process !== 'undefined' && process.env) {
-      return process.env[key];
-    }
-  } catch (e) {
-    // Ignore
-  }
-
-  // Last resort: Check window object if polyfilled elsewhere
-  return (window as any).process?.env?.[key];
-};
-
 // Initialize global process if missing (for library compatibility)
 if (typeof process === 'undefined') {
   (window as any).process = { env: {} };
 }
 
+// Safe access to environment variables
+const getEnvVar = (key: string): string | undefined => {
+  // CRITICAL FOR VITE/VERCEL:
+  // Vite replaces `import.meta.env.VITE_KEY` statically at build time.
+  // Dynamic access (e.g. env[key]) often fails in production builds.
+  // We must explicitly reference the keys we expect.
+  
+  const metaEnv = (import.meta as any).env || {};
+
+  if (key === 'API_KEY') {
+    return metaEnv.VITE_API_KEY || metaEnv.API_KEY || process.env.API_KEY;
+  }
+  if (key === 'OPENAI_API_KEY') {
+    return metaEnv.VITE_OPENAI_API_KEY || metaEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  }
+  if (key === 'CLAUDE_API_KEY') {
+    return metaEnv.VITE_CLAUDE_API_KEY || metaEnv.CLAUDE_API_KEY || process.env.CLAUDE_API_KEY;
+  }
+
+  // Fallback for other keys
+  return metaEnv[key] || metaEnv[`VITE_${key}`] || process.env[key];
+};
+
 // --- GOOGLE GEMINI SETUP ---
-// We lazily initialize or ensure the key exists to prevent top-level crashes
 const apiKey = getEnvVar('API_KEY') || ""; 
-// Note: GoogleGenAI might throw if key is empty string, so we handle it.
-// However, the prompt mandates strict usage of process.env.API_KEY.
-// We initialize it here. If it fails, we catch it inside the functions.
 
 let ai: GoogleGenAI;
 try {
   ai = new GoogleGenAI({ apiKey: apiKey });
 } catch (e) {
   console.warn("Google GenAI failed to initialize at startup (likely missing API Key). Will retry on request.");
-  // Create a dummy instance or let it fail later
   ai = new GoogleGenAI({ apiKey: "DUMMY_KEY_TO_PREVENT_CRASH" }); 
 }
 
@@ -61,9 +52,7 @@ try {
 const getAIClient = (): GoogleGenAI => {
   const currentKey = getEnvVar('API_KEY');
   if (!currentKey) {
-    console.warn("API_KEY is missing in environment variables.");
-    // We return the instance anyway; the API call will fail with a clear authentication error
-    // instead of crashing the app structure.
+    throw new Error("Missing API Key. Please add 'VITE_API_KEY' to your Vercel Environment Variables.");
   }
   // Re-initialize if we have a key now but didn't before (e.g. slight timing issue)
   if (currentKey && (!apiKey || apiKey === "DUMMY_KEY_TO_PREVENT_CRASH")) {
