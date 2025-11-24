@@ -631,14 +631,18 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
     lastError = error;
   }
 
-  // 2. Try Gemini 2.5 Flash Image (Fallback using generateContent)
-  // NOTE: This model does NOT use generateImages.
+  // 2. Try Gemini 3 Pro Image Preview (High Quality Content Gen with imageConfig)
   try {
-    console.log("Attempting image generation with model: gemini-2.5-flash-image");
+    console.log("Attempting image generation with model: gemini-3-pro-image-preview");
     const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash-image',
+      model: 'gemini-3-pro-image-preview',
       contents: { parts: [{ text: prompt }] },
-      // Nano Banana infers image generation and returns inlineData
+      config: {
+        imageConfig: {
+            aspectRatio: aspectRatio, 
+            imageSize: "1K"
+        }
+      }
     });
 
     if (response.candidates && response.candidates.length > 0) {
@@ -648,14 +652,34 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
         }
       }
     }
-    // If no image part found
-    console.warn("Flash Image returned no inlineData.");
+  } catch (error) {
+    console.warn("Gemini 3 Pro Image failed:", error);
+    lastError = error;
+  }
+
+  // 3. Try Gemini 2.5 Flash Image (Fallback using generateContent)
+  try {
+    console.log("Attempting image generation with model: gemini-2.5-flash-image");
+    // Nano Banana uses generateContent. We make the prompt explicit.
+    const enhancedPrompt = `Generate a photorealistic image of: ${prompt}`;
+    const response = await client.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: enhancedPrompt }] },
+    });
+
+    if (response.candidates && response.candidates.length > 0) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+           return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+        }
+      }
+    }
   } catch (error) {
     console.warn("Gemini Flash Image failed:", error);
     lastError = error;
   }
 
-  // 3. Try Imagen 4 (Premium Fallback)
+  // 4. Try Imagen 4 (Premium Fallback)
   try {
     console.log("Attempting image generation with model: imagen-4.0-generate-001");
     const response = await client.models.generateImages({
@@ -752,6 +776,8 @@ export const generateSpeech = async (text: string, voice: string = 'Kore'): Prom
 export const generateAudioMimic = async (audioBase64: string, textToSay: string): Promise<string> => {
   try {
     const client = getAIClient();
+    // Step 1: Analyze audio and generate text response (Audio Input -> Text Output)
+    // using standard Flash model which supports audio input.
     const analyzeResponse = await client.models.generateContent({
       model: "gemini-2.5-flash",
       contents: {
@@ -761,8 +787,12 @@ export const generateAudioMimic = async (audioBase64: string, textToSay: string)
         ]
       }
     });
+    
     const generatedText = analyzeResponse.text;
     if (!generatedText) throw new Error("Could not analyze audio or generate text response.");
+
+    // Step 2: Convert the generated text to speech using TTS model
+    // This mimics the 'response' part, although voice cloning itself isn't supported directly via API this way yet.
     return await generateSpeech(generatedText, 'Puck');
   } catch (error) {
     console.error("Error generating audio mimic (Fallback):", error);
