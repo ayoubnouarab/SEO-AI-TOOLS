@@ -697,27 +697,48 @@ export const reviewArticleContent = async (content: string, config: SEOConfig): 
 };
 
 export const generateRealImage = async (prompt: string, aspectRatio: string = '16:9'): Promise<string> => {
-  try {
-    const client = getAIClient();
-    // Using Imagen 4 model for high quality image generation
-    const response = await client.models.generateImages({
-      model: 'imagen-4.0-generate-001',
-      prompt: prompt,
-      config: {
-        numberOfImages: 1,
-        aspectRatio: aspectRatio,
-        outputMimeType: 'image/jpeg'
-      },
-    });
+  const client = getAIClient();
+  const models = [
+    'imagen-3.0-generate-001',   // Stable, widely available
+    'gemini-2.5-flash-image',    // Fast, lightweight fallback
+    'imagen-4.0-generate-001'    // Newest (Try last as it might be restricted)
+  ];
 
-    const base64String = response.generatedImages?.[0]?.image?.imageBytes;
-    if (!base64String) throw new Error("No image data returned");
-    
-    return `data:image/jpeg;base64,${base64String}`;
-  } catch (error) {
-    console.error("Error generating real image:", error);
-    throw error;
+  let lastError;
+
+  for (const model of models) {
+    try {
+      console.log(`Attempting image generation with model: ${model}`);
+      
+      // Note: @google/genai SDK usually handles both via generateImages depending on config,
+      // but if the model is a 'gemini' model, we might need generateContent for some older SDK versions.
+      // However, the new SDK unifies this. Let's stick to generateImages for Imagen models.
+      
+      // Special handling if we are forced to use a Gemini model for images (uncommon but possible in some setups)
+      // Standard path:
+      const response = await client.models.generateImages({
+        model: model,
+        prompt: prompt,
+        config: {
+          numberOfImages: 1,
+          aspectRatio: aspectRatio,
+          outputMimeType: 'image/jpeg'
+        },
+      });
+
+      const base64String = response.generatedImages?.[0]?.image?.imageBytes;
+      if (base64String) {
+        return `data:image/jpeg;base64,${base64String}`;
+      }
+    } catch (error) {
+      console.warn(`Model ${model} failed:`, error);
+      lastError = error;
+      // Continue to next model
+    }
   }
+
+  console.error("All image generation models failed.");
+  throw lastError || new Error("Image generation failed");
 };
 
 export const generateVideo = async (prompt: string): Promise<string> => {
