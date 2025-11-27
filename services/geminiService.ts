@@ -865,8 +865,6 @@ const buildArticlePrompt = (config: SEOConfig): string => {
       
       **ALIGNMENT**: Use these specific themes for your H2 headers:
       ${config.satelliteThemes ? config.satelliteThemes.map(t => `- ${t}`).join('\n') : 'No specific alignment required.'}
-  
-      **LENGTH GOAL**: Write as much as possible (aim for 5000 words). Do not stop early.
       ` 
       : `
       **SATELLITE STRUCTURE**:
@@ -877,6 +875,13 @@ const buildArticlePrompt = (config: SEOConfig): string => {
       `;
   }
 
+  // Determine Length Instruction based on user choice or defaults
+  const lengthInstruction = config.targetWordCount 
+    ? `**LENGTH GOAL**: Target approximately ${config.targetWordCount} words. Structure the content sections to fit this length comfortably.`
+    : config.type === ArticleType.PILLAR 
+        ? `**LENGTH GOAL**: Write as much as possible (aim for 5000 words). Do not stop early.`
+        : `**LENGTH GOAL**: Target approximately 1000-1500 words.`;
+
   return `
     Write a world-class article in Native American English.
     **Topic**: ${config.topic}
@@ -885,6 +890,8 @@ const buildArticlePrompt = (config: SEOConfig): string => {
     **Secondary Keywords (MANDATORY)**: ${config.secondaryKeywords.join(', ')}
     
     ${structureInstruction}
+
+    ${lengthInstruction}
 
     ### *** MANDATORY COMPLIANCE CHECKLIST ***
     [STRUCTURE]

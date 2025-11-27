@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider, TopicSuggestion, ChatMessage, WordPressConfig, WordPressCategory } from '../types';
 import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent, refineArticleContent, publishToWordPress, fetchWordPressCategories, ARTICLE_TEMPLATES } from '../services/geminiService';
-import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle, MessageSquare, Send, Bot, Tag, Globe, UploadCloud, FolderTree, LayoutTemplate, CalendarClock, List } from 'lucide-react';
+import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle, MessageSquare, Send, Bot, Tag, Globe, UploadCloud, FolderTree, LayoutTemplate, CalendarClock, List, AlignLeft } from 'lucide-react';
 import { SeoChecklist } from './SeoChecklist';
 
 interface EditorProps {
@@ -19,7 +19,8 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
     type: ArticleType.SATELLITE,
     provider: 'GEMINI', // Default
     relatedPillarTopic: '',
-    templateId: '' // Default to no template
+    templateId: '', // Default to no template
+    targetWordCount: ''
   });
 
   // API Keys State
@@ -832,6 +833,26 @@ ${currentArticle.content}`;
                   <p>{ARTICLE_TEMPLATES.find(t => t.id === config.templateId)?.description}</p>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Target Word Count */}
+          {mode === 'SINGLE' && (
+            <div className="mb-4">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                <AlignLeft size={12} /> Target Length
+              </label>
+              <select
+                className="w-full p-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                value={config.targetWordCount || ''}
+                onChange={(e) => setConfig({ ...config, targetWordCount: e.target.value })}
+              >
+                <option value="">Auto (Based on Type)</option>
+                <option value="800-1200">Short (800 - 1,200 words)</option>
+                <option value="1500-2500">Standard (1,500 - 2,500 words)</option>
+                <option value="3000-4000">Deep Dive (3,000+ words)</option>
+                <option value="5000">Pillar / Ultimate (5,000 words)</option>
+              </select>
             </div>
           )}
 

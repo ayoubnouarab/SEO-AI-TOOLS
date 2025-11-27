@@ -39,6 +39,7 @@ export interface SEOConfig {
   secondaryKeywords: string[];
   type: ArticleType;
   templateId?: string; // New field for template selection
+  targetWordCount?: string; // New field for word count preference
   provider: AIProvider; 
   relatedPillarTopic?: string; 
   satelliteThemes?: string[]; 
