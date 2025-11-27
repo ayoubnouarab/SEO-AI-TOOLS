@@ -1,4 +1,3 @@
-import { put } from '@vercel/blob';
 
 // Helper to check if Blob is configured
 const isBlobConfigured = (): boolean => {
@@ -27,8 +26,9 @@ export const uploadToBlob = async (file: File | Blob, filename: string): Promise
   }
 
   try {
-    // Client-side upload using the token directly (Note: In production enterprise apps, use a server-side route for token security)
-    // For this workspace, we use the direct token method for simplicity.
+    // Dynamic import to prevent Node.js dependencies from crashing the browser on initial load
+    const { put } = await import('@vercel/blob');
+    
     const token = getBlobToken();
     
     const blob = await put(filename, file, {
