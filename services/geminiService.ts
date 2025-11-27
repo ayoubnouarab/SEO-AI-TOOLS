@@ -1074,12 +1074,29 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
     });
     const base64String = response.generatedImages?.[0]?.image?.imageBytes;
     if (base64String) base64Result = `data:image/jpeg;base64,${base64String}`;
-  } catch (error) {
-    console.warn("Imagen 3 failed:", error);
+  } catch (error: any) {
+    console.warn(`Imagen 3 failed: ${error.message}`);
     lastError = error;
   }
 
-  // 2. Try Gemini 3 Pro Image Preview (High Quality Content Gen with imageConfig)
+  // 2. Try Imagen 3 Fast (Fallback)
+  if (!base64Result) {
+    try {
+      console.log(`Attempting image generation with model: imagen-3.0-fast-generate-001 (Ratio: ${apiAspectRatio})`);
+      const response = await client.models.generateImages({
+        model: 'imagen-3.0-fast-generate-001',
+        prompt: prompt,
+        config: { numberOfImages: 1, aspectRatio: apiAspectRatio, outputMimeType: 'image/jpeg' },
+      });
+      const base64String = response.generatedImages?.[0]?.image?.imageBytes;
+      if (base64String) base64Result = `data:image/jpeg;base64,${base64String}`;
+    } catch (error: any) {
+      console.warn(`Imagen 3 Fast failed: ${error.message}`);
+      lastError = error;
+    }
+  }
+
+  // 3. Try Gemini 3 Pro Image Preview (High Quality Content Gen with imageConfig)
   if (!base64Result) {
     try {
       console.log(`Attempting image generation with model: gemini-3-pro-image-preview (Ratio: ${apiAspectRatio})`);
@@ -1102,18 +1119,18 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
           }
         }
       }
-    } catch (error) {
-      console.warn("Gemini 3 Pro Image failed:", error);
+    } catch (error: any) {
+      console.warn(`Gemini 3 Pro Image failed: ${error.message}`);
       lastError = error;
     }
   }
 
-  // 3. Try Gemini 2.5 Flash Image (Fallback using generateContent)
+  // 4. Try Gemini 2.5 Flash Image (Fallback using generateContent)
   if (!base64Result) {
     try {
       console.log("Attempting image generation with model: gemini-2.5-flash-image");
       // Nano Banana uses generateContent. We make the prompt explicit.
-      const enhancedPrompt = `Generate a photorealistic image of: ${prompt}`;
+      const enhancedPrompt = `Generate a high-quality, photorealistic image of: ${prompt}`;
       const response = await client.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: enhancedPrompt }] },
@@ -1127,13 +1144,13 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
           }
         }
       }
-    } catch (error) {
-      console.warn("Gemini Flash Image failed:", error);
+    } catch (error: any) {
+      console.warn(`Gemini Flash Image failed: ${error.message}`);
       lastError = error;
     }
   }
 
-  // 4. Try Imagen 4 (Premium Fallback)
+  // 5. Try Imagen 4 (Premium Fallback)
   if (!base64Result) {
     try {
       console.log(`Attempting image generation with model: imagen-4.0-generate-001 (Ratio: ${apiAspectRatio})`);
@@ -1144,14 +1161,15 @@ export const generateRealImage = async (prompt: string, aspectRatio: string = '1
       });
       const base64String = response.generatedImages?.[0]?.image?.imageBytes;
       if (base64String) base64Result = `data:image/jpeg;base64,${base64String}`;
-    } catch (error) {
-      console.warn("Imagen 4 failed:", error);
+    } catch (error: any) {
+      console.warn(`Imagen 4 failed: ${error.message}`);
       lastError = error;
     }
   }
 
   if (!base64Result) {
-    throw lastError || new Error("Image generation failed on all models.");
+    const errorMessage = lastError?.message || "Unknown error";
+    throw new Error(`Image generation failed on all models. Last error: ${errorMessage}`);
   }
 
   // --- UPLOAD TO BLOB IF CONFIGURED ---
