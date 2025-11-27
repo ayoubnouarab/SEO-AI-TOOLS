@@ -1,27 +1,26 @@
 
 // Helper to check if Blob is configured
+// We now have a hardcoded fallback token provided by the user
+const HARDCODED_TOKEN = "vercel_blob_rw_37p6t7QisdCFUEZl_R54USMdjnktiz5iUADXDSj7vfiTE6q";
+
 const isBlobConfigured = (): boolean => {
-  try {
-    // @ts-ignore
-    if (import.meta.env.VITE_BLOB_READ_WRITE_TOKEN) return true;
-    // @ts-ignore
-    if (process.env.BLOB_READ_WRITE_TOKEN) return true;
-    return false;
-  } catch (e) {
-    return false;
-  }
+  // Always true now since we have a hardcoded token
+  return true;
 };
 
 const getBlobToken = (): string => {
     try {
         // @ts-ignore
-        return import.meta.env.VITE_BLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN || '';
-    } catch(e) { return ''; }
+        const envToken = import.meta.env.VITE_BLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
+        if (envToken) return envToken;
+    } catch(e) {}
+    
+    return HARDCODED_TOKEN;
 };
 
 export const uploadToBlob = async (file: File | Blob, filename: string): Promise<string> => {
   if (!isBlobConfigured()) {
-    console.warn("Vercel Blob is not configured (Missing VITE_BLOB_READ_WRITE_TOKEN). Returning local object URL.");
+    console.warn("Vercel Blob is not configured. Returning local object URL.");
     return URL.createObjectURL(file);
   }
 
@@ -31,15 +30,18 @@ export const uploadToBlob = async (file: File | Blob, filename: string): Promise
     
     const token = getBlobToken();
     
+    // Use 'put' with the token. 
+    // Note: Client-side 'put' with a read-write token is risky for production but works for this workspace.
     const blob = await put(filename, file, {
       access: 'public',
-      token: token
+      token: token,
+      contentType: file.type
     });
 
     return blob.url;
   } catch (error) {
     console.error("Blob Upload Failed:", error);
-    // Fallback to local URL if upload fails
+    // Fallback to local URL if upload fails so the app keeps working
     return URL.createObjectURL(file);
   }
 };
