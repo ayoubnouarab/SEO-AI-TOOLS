@@ -12,16 +12,37 @@ export interface User {
   name: string;
 }
 
+export interface WordPressConfig {
+  siteUrl: string;
+  username: string;
+  applicationPassword: string;
+}
+
+export interface WordPressCategory {
+  id: number;
+  name: string;
+  count: number;
+}
+
+export interface ArticleTemplate {
+  id: string;
+  label: string;
+  description: string;
+  defaultTone: string;
+  structureInstruction: string;
+}
+
 export interface SEOConfig {
   topic: string;
   audience: string;
   mainKeyword: string;
   secondaryKeywords: string[];
   type: ArticleType;
-  provider: AIProvider; // New field for selecting the AI model
-  relatedPillarTopic?: string; // If type is satellite
-  satelliteThemes?: string[]; // Optional: For Pillar article structure alignment
-  apiKey?: string; // Optional API Key for external providers
+  templateId?: string; // New field for template selection
+  provider: AIProvider; 
+  relatedPillarTopic?: string; 
+  satelliteThemes?: string[]; 
+  apiKey?: string; 
 }
 
 export interface ArticleVersion {
@@ -44,10 +65,11 @@ export interface GeneratedContent {
   title: string;
   content: string;
   metaDescription: string;
+  tags?: string[]; 
   slug: string;
   validation?: ValidationResult;
   history: ArticleVersion[];
-  chatHistory: ChatMessage[]; // Per-article chat history
+  chatHistory: ChatMessage[]; 
 }
 
 export interface TopicSuggestion {

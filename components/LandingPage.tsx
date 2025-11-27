@@ -1,13 +1,11 @@
-
 import React from 'react';
 import { Layout, ArrowRight, CheckCircle, Zap, Image as ImageIcon, Video, ShieldCheck, Mic, TrendingUp, X, BarChart3, Layers, Globe, Cpu, Smartphone, Lock, Sparkles, HelpCircle } from 'lucide-react';
 
 interface LandingPageProps {
   onLoginClick: () => void;
-  onSignupClick: () => void;
 }
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignupClick }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick }) => {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 overflow-x-hidden">
       {/* --- HEADER (Sticky) --- */}
@@ -26,16 +24,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
           <div className="flex items-center gap-4">
             <button 
               onClick={onLoginClick}
-              className="hidden md:block px-4 py-2 text-sm font-bold text-slate-600 hover:text-blue-600 transition-colors"
-            >
-              Log In
-            </button>
-            <button 
-              onClick={onSignupClick}
               className="px-6 py-2.5 bg-slate-900 hover:bg-blue-600 text-white text-sm font-bold rounded-lg transition-all shadow-lg hover:shadow-blue-900/30 flex items-center gap-2 group relative overflow-hidden"
             >
               <span className="relative z-10 flex items-center gap-2">
-                Get Access <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform"/>
+                Member Login <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform"/>
               </span>
               <div className="absolute inset-0 bg-white/20 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-500"></div>
             </button>
@@ -91,10 +83,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
           
           <div className="flex flex-col md:flex-row items-center justify-center gap-4 pt-8 animate-fade-in-up" style={{ animationDelay: '0.3s' }}>
             <button 
-              onClick={onSignupClick}
+              onClick={onLoginClick}
               className="relative overflow-hidden px-10 py-5 bg-blue-600 hover:bg-blue-500 text-white text-lg font-bold rounded-xl shadow-xl shadow-blue-900/30 transition-all hover:scale-105 hover:-translate-y-1 w-full md:w-auto flex items-center justify-center gap-3 group"
             >
-              <span className="relative z-10 flex items-center gap-2">Start Your Free Trial <ArrowRight size={20} /></span>
+              <span className="relative z-10 flex items-center gap-2">Access Workspace <ArrowRight size={20} /></span>
               <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent skew-x-12 translate-x-[-150%] animate-shine"></div>
             </button>
             <div className="flex flex-col md:items-start items-center gap-1">
@@ -133,7 +125,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
                     <Layout size={48} className="text-blue-600 mb-4 drop-shadow-lg" />
                     <p className="font-bold text-slate-800 text-lg">Interactive Dashboard Preview</p>
                     <p className="text-sm text-slate-500">Sign in to access full features</p>
-                    <button onClick={onSignupClick} className="mt-4 px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-blue-600 transition-colors">
+                    <button onClick={onLoginClick} className="mt-4 px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-blue-600 transition-colors">
                       Enter Workspace
                     </button>
                  </div>
@@ -313,7 +305,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
                      <li className="flex gap-2"><CheckCircle size={16} className="text-blue-600"/> Gemini 2.5 Flash</li>
                      <li className="flex gap-2"><CheckCircle size={16} className="text-blue-600"/> Basic SEO Check</li>
                   </ul>
-                  <button onClick={onSignupClick} className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">Sign Up Free</button>
+                  <button onClick={onLoginClick} className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">Login to Account</button>
                </div>
 
                {/* Pro Tier */}
@@ -327,7 +319,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
                      <li className="flex gap-2"><CheckCircle size={16} className="text-white"/> Nano Banana Images</li>
                      <li className="flex gap-2"><CheckCircle size={16} className="text-white"/> Veo Video Generation</li>
                   </ul>
-                  <button onClick={onSignupClick} className="w-full py-3 bg-white hover:bg-blue-50 text-blue-600 font-bold rounded-lg transition-colors shadow-lg">Get Pro Access</button>
+                  <button onClick={onLoginClick} className="w-full py-3 bg-white hover:bg-blue-50 text-blue-600 font-bold rounded-lg transition-colors shadow-lg">Login to Upgrade</button>
                </div>
 
                {/* Enterprise Tier */}
@@ -390,22 +382,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginClick, onSignup
             
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                <button 
-                  onClick={onSignupClick}
+                  onClick={onLoginClick}
                   className="w-full sm:w-auto px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white text-lg font-bold rounded-xl shadow-lg shadow-blue-900/50 transition-all hover:scale-105"
                >
-                  Create Free Account
-               </button>
-               <button 
-                  onClick={onLoginClick}
-                  className="w-full sm:w-auto px-8 py-4 bg-white/10 hover:bg-white/20 text-white border border-white/20 text-lg font-bold rounded-xl transition-all backdrop-blur-sm"
-               >
-                  Existing Member Login
+                  Login to Workspace
                </button>
             </div>
             
             <p className="mt-8 text-sm text-slate-500">
                <ShieldCheck size={14} className="inline mr-1" /> 
-               Secure Enterprise-Grade Environment. No Credit Card Required.
+               Secure Enterprise-Grade Environment.
             </p>
          </div>
       </section>

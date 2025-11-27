@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, Type, Schema, GenerateContentResponse, Modality } from "@google/genai";
-import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult, TopicSuggestion } from '../types';
+import { SEOConfig, ArticleType, GeneratedContent, ClusterPlan, ValidationResult, TopicSuggestion, WordPressConfig, WordPressCategory, ArticleTemplate } from '../types';
+import { uploadToBlob, base64ToBlob } from './blobService';
 
 // --- VITE/VERCEL COMPATIBILITY FIX ---
 // Polyfill process.env for Vite environments to avoid "process is not defined"
@@ -14,14 +15,92 @@ if (typeof process === 'undefined') {
   (window as any).process = { env: {} };
 }
 
+// --- TEMPLATE LIBRARY ---
+export const ARTICLE_TEMPLATES: ArticleTemplate[] = [
+  {
+    id: 'ultimate-guide',
+    label: 'Ultimate Guide (Pillar)',
+    description: 'Comprehensive, deep-dive content covering A-Z of a topic.',
+    defaultTone: 'Authoritative & Educational',
+    structureInstruction: `
+      **STRUCTURE (ULTIMATE GUIDE):**
+      1. **The Hook**: Start with a relatable problem or a bold statement.
+      2. **What is [Topic]?**: Define the core concept simply.
+      3. **Why it Matters**: Explain the importance/benefits.
+      4. **Core Strategy/Steps**: The "Meat" of the guide. Use H2s for steps and H3s for details.
+      5. **Advanced Tactics**: Tips for experts.
+      6. **Case Study/Example**: Real-world application.
+      7. **FAQ**: Answer 3-5 common questions.
+      8. **Conclusion & CTA**: Summarize and direct to next step.
+    `
+  },
+  {
+    id: 'listicle',
+    label: 'Listicle / Roundup',
+    description: 'Scannable list of items, tools, or tips. High click-through potential.',
+    defaultTone: 'Exciting & Direct',
+    structureInstruction: `
+      **STRUCTURE (LISTICLE):**
+      1. **Intro**: Quick hook, who is this for, and why they need this list.
+      2. **The List**: Use H2 for each item name (e.g., "1. Tool Name").
+         - Under each item include: "What is it?", "Key Features", "Pros/Cons", and "Pricing/Verdict".
+      3. **Comparison Table**: A Markdown table summarizing the items.
+      4. **Buying Guide**: What to look for when choosing.
+      5. **Conclusion**: The #1 recommendation.
+    `
+  },
+  {
+    id: 'how-to',
+    label: 'How-To Tutorial',
+    description: 'Step-by-step instructions to solve a specific problem.',
+    defaultTone: 'Instructional & Encouraging',
+    structureInstruction: `
+      **STRUCTURE (HOW-TO):**
+      1. **Intro**: The end result (what will they achieve?).
+      2. **Prerequisites**: What tools/knowledge do they need before starting?
+      3. **Step-by-Step Guide**: Numbered H2 headers (e.g., "Step 1: [Action]").
+         - Use bold text for buttons/actions.
+         - Include "Pro Tips" in blockquotes.
+      4. **Troubleshooting**: Common pitfalls and fixes.
+      5. **Conclusion**: Encouragement to start.
+    `
+  },
+  {
+    id: 'comparison',
+    label: 'Product Comparison (Vs)',
+    description: 'Direct comparison between two or more competitors.',
+    defaultTone: 'Objective & Analytical',
+    structureInstruction: `
+      **STRUCTURE (COMPARISON):**
+      1. **Intro**: Why these two? The current market context.
+      2. **At a Glance**: Quick summary table (Winner).
+      3. **Round 1: Features**: Compare specific feature sets.
+      4. **Round 2: Performance/Ease of Use**: User experience comparison.
+      5. **Round 3: Pricing**: Value for money.
+      6. **The Verdict**: Who should buy X, and who should buy Y?
+    `
+  },
+  {
+    id: 'case-study',
+    label: 'Case Study / Analysis',
+    description: 'Data-driven story of success or failure.',
+    defaultTone: 'Professional & Data-Driven',
+    structureInstruction: `
+      **STRUCTURE (CASE STUDY):**
+      1. **Executive Summary**: The result in 1 sentence (TL;DR).
+      2. **The Challenge**: What was the problem before?
+      3. **The Solution**: The strategy implemented.
+      4. **The Results**: Hard numbers/data points (Use a markdown table).
+      5. **Key Takeaways**: What the reader can learn from this.
+    `
+  }
+];
+
 // --- API KEY MANAGEMENT ---
-// We do NOT initialize the client globally to prevent "White Page" crashes on load.
-// We initialize it only when a function is called.
 
 const getApiKey = (): string => {
   // CRITICAL FIX FOR VERCEL:
-  // Vercel/Vite requires EXPLICIT, DIRECT access to import.meta.env.VITE_API_KEY for static replacement to work.
-  // Do NOT alias import.meta to a variable.
+  // Vercel/Vite requires EXPLICIT, DIRECT access to import.meta.env.VITE_API_KEY
   
   try {
     // @ts-ignore
@@ -30,7 +109,7 @@ const getApiKey = (): string => {
       return import.meta.env.VITE_API_KEY;
     }
   } catch (e) {
-    // Ignore error if import.meta is not available
+    // Ignore error
   }
   
   // Fallbacks for local dev or Node environments
@@ -42,6 +121,11 @@ const getApiKey = (): string => {
   } catch (e) {}
 
   return "";
+};
+
+export const hasValidApiKey = (): boolean => {
+  const key = getApiKey();
+  return !!key && key.length > 0 && key !== "MISSING_KEY_PLACEHOLDER";
 };
 
 const getExternalKey = (provider: 'OPENAI' | 'CLAUDE'): string => {
@@ -120,6 +204,7 @@ You are strictly judged on the quality, humanity, and depth of your writing.
 *** VISUALS ***
 -   Always include the 4 requested images (1 Cover, 3 Body).
 -   Use "Chart Graphique" style for body images.
+-   **ASPECT RATIO**: Use strictly 19:9 (Panoramic) for all images.
 `;
 
 // Helper to clean JSON string from Markdown code blocks
@@ -303,6 +388,7 @@ export const generateArticleContent = async (config: SEOConfig): Promise<Generat
       title: metadata.title,
       slug: metadata.slug,
       metaDescription: metadata.metaDescription,
+      tags: metadata.tags, // Populate tags
       content: content,
       validation,
       history: [],
@@ -353,18 +439,38 @@ export const refineArticleContent = async (currentContent: string, instruction: 
 // --- PROVIDER SPECIFIC IMPLEMENTATIONS ---
 
 const generateWithGemini = async (prompt: string, config: SEOConfig): Promise<string> => {
+  // Use Gemini 3 Pro Preview for Pillars for depth, but fallback if not enabled
   const modelId = config.type === ArticleType.PILLAR ? 'gemini-3-pro-preview' : 'gemini-2.5-flash';
   const client = getAIClient(config.apiKey);
   
-  const response = await client.models.generateContent({
-    model: modelId,
-    contents: prompt,
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
-      temperature: 0.7,
-    },
-  });
-  return response.text || "";
+  try {
+    const response = await client.models.generateContent({
+      model: modelId,
+      contents: prompt,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
+        temperature: 0.7,
+      },
+    });
+    return response.text || "";
+  } catch (error: any) {
+    console.warn(`Gemini model ${modelId} failed:`, error);
+    
+    // Automatic fallback to flash if pro fails
+    if (modelId !== 'gemini-2.5-flash') {
+        console.log("Falling back to gemini-2.5-flash...");
+        const response = await client.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION_AYOUB,
+              temperature: 0.7,
+            },
+        });
+        return response.text || "";
+    }
+    throw error;
+  }
 };
 
 const generateWithOpenAI = async (prompt: string, apiKey?: string): Promise<string> => {
@@ -432,37 +538,347 @@ const generateWithClaude = async (prompt: string, apiKey?: string): Promise<stri
   return data.content?.[0]?.text || "";
 };
 
+// --- WORDPRESS PUBLISHING SERVICE ---
+
+const parseInlineMarkdown = (text: string): string => {
+    return text
+        // Bold **text**
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        // Italic *text*
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        // Links [text](url)
+        .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+};
+
+const convertMarkdownToHtml = (markdown: string): string => {
+  if (!markdown) return "";
+
+  const lines = markdown.split('\n');
+  let html = "";
+  let inList = false;
+  let inQuote = false;
+  let inTable = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+
+    // Skip empty lines, close states if needed
+    if (line === "") {
+      if (inList) { html += "</ul>\n"; inList = false; }
+      if (inQuote) { html += "</blockquote>\n"; inQuote = false; }
+      if (inTable) { html += "</tbody></table></div>\n"; inTable = false; }
+      continue;
+    }
+
+    // Table Detection: | Col | Col |
+    if (line.startsWith('|') && line.endsWith('|')) {
+        if (!inTable) {
+            html += '<div class="wp-block-table"><table><thead><tr>';
+            const headers = line.split('|').filter(c => c.trim());
+            headers.forEach(h => html += `<th>${parseInlineMarkdown(h.trim())}</th>`);
+            html += '</tr></thead><tbody>';
+            inTable = true;
+            // Look ahead for separator line |---|
+            if (i + 1 < lines.length && lines[i+1].includes('---')) {
+                i++; // Skip separator
+            }
+        } else {
+            html += '<tr>';
+            const cells = line.split('|').filter(c => c.trim() !== ''); // Basic split
+            cells.forEach(c => html += `<td>${parseInlineMarkdown(c.trim())}</td>`);
+            html += '</tr>';
+        }
+        continue;
+    } else if (inTable) {
+        html += "</tbody></table></div>\n";
+        inTable = false;
+    }
+
+    // Headers
+    if (line.startsWith('# ')) {
+      html += `<h1>${parseInlineMarkdown(line.substring(2))}</h1>\n`;
+    } else if (line.startsWith('## ')) {
+      html += `<h2>${parseInlineMarkdown(line.substring(3))}</h2>\n`;
+    } else if (line.startsWith('### ')) {
+      html += `<h3>${parseInlineMarkdown(line.substring(4))}</h3>\n`;
+    } 
+    // Blockquotes
+    else if (line.startsWith('> ')) {
+        if (!inQuote) { html += "<blockquote>"; inQuote = true; }
+        html += `<p>${parseInlineMarkdown(line.substring(2))}</p>`;
+    }
+    // Images: ![alt](url)
+    else if (line.match(/^!\[.*?\]\(.*?\)$/)) {
+        const match = line.match(/^!\[(.*?)\]\((.*?)\)$/);
+        if (match) {
+            html += `<figure><img src="${match[2]}" alt="${match[1]}" /><figcaption>${match[1]}</figcaption></figure>\n`;
+        }
+    }
+    // Lists
+    else if (line.startsWith('- ') || line.startsWith('* ')) {
+      if (!inList) {
+        html += "<ul>\n";
+        inList = true;
+      }
+      html += `<li>${parseInlineMarkdown(line.substring(2))}</li>\n`;
+    } 
+    // Paragraphs
+    else {
+      if (inList) { html += "</ul>\n"; inList = false; }
+      if (inQuote) { html += "</blockquote>\n"; inQuote = false; }
+      html += `<p>${parseInlineMarkdown(line)}</p>\n`;
+    }
+  }
+
+  if (inList) html += "</ul>\n";
+  if (inQuote) html += "</blockquote>\n";
+  if (inTable) html += "</tbody></table></div>\n";
+
+  return html;
+};
+
+const formatWpUrl = (siteUrl: string): string => {
+  let baseUrl = siteUrl.replace(/\/$/, "");
+  if (!baseUrl.startsWith("http")) {
+    baseUrl = `https://${baseUrl}`;
+  }
+  return baseUrl;
+};
+
+// --- HELPER: Upload Image to WP Media Library ---
+const uploadImageToWordPress = async (base64Data: string, altText: string, wpConfig: WordPressConfig): Promise<string> => {
+    const baseUrl = formatWpUrl(wpConfig.siteUrl);
+    const endpoint = `${baseUrl}/wp-json/wp/v2/media`;
+    const authString = btoa(`${wpConfig.username}:${wpConfig.applicationPassword}`);
+
+    // 1. Convert Base64 to Blob
+    const mimeTypeMatch = base64Data.match(/^data:(.*?);base64,(.*)$/);
+    if (!mimeTypeMatch) throw new Error("Invalid base64 image data");
+    
+    const mimeType = mimeTypeMatch[1];
+    const byteCharacters = atob(mimeTypeMatch[2]);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: mimeType });
+    
+    // 2. Generate Filename
+    const ext = mimeType.split('/')[1] || 'png';
+    const filename = `ai-gen-${Date.now()}-${Math.floor(Math.random() * 1000)}.${ext}`;
+
+    // 3. Upload
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${authString}`,
+                'Content-Disposition': `attachment; filename="${filename}"`,
+                'Content-Type': mimeType
+            },
+            body: blob
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.message || `WP Upload Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        // 4. Update Alt Text (Optional but good for SEO)
+        try {
+            await fetch(`${endpoint}/${data.id}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Basic ${authString}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ alt_text: altText })
+            });
+        } catch (e) {
+            console.warn("Failed to set alt text", e);
+        }
+
+        return data.source_url; // The public URL of the image
+    } catch (error) {
+        console.error("Image Upload Failed", error);
+        throw error;
+    }
+};
+
+export const fetchWordPressCategories = async (wpConfig: WordPressConfig): Promise<WordPressCategory[]> => {
+  if (!wpConfig.siteUrl || !wpConfig.username || !wpConfig.applicationPassword) {
+    throw new Error("Missing WordPress credentials.");
+  }
+  
+  const baseUrl = formatWpUrl(wpConfig.siteUrl);
+  const endpoint = `${baseUrl}/wp-json/wp/v2/categories?per_page=100`;
+  const authString = btoa(`${wpConfig.username}:${wpConfig.applicationPassword}`);
+  
+  try {
+    const response = await fetch(endpoint, {
+       method: 'GET',
+       headers: {
+         'Authorization': `Basic ${authString}`
+       }
+    });
+    
+    if (!response.ok) {
+       const err = await response.json().catch(() => ({}));
+       throw new Error(err.message || `WP Error: ${response.status}`);
+    }
+    
+    const categories = await response.json();
+    return categories.map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      count: c.count
+    }));
+  } catch (error) {
+    console.error("Failed to fetch WP Categories:", error);
+    throw error;
+  }
+};
+
+export const publishToWordPress = async (article: GeneratedContent, wpConfig: WordPressConfig, categoryId?: number, status: string = 'draft', scheduledDate?: string): Promise<string> => {
+  if (!wpConfig.siteUrl || !wpConfig.username || !wpConfig.applicationPassword) {
+    throw new Error("Missing WordPress configuration details.");
+  }
+
+  const baseUrl = formatWpUrl(wpConfig.siteUrl);
+  const endpoint = `${baseUrl}/wp-json/wp/v2/posts`;
+  const authString = btoa(`${wpConfig.username}:${wpConfig.applicationPassword}`);
+
+  // --- IMAGE UPLOAD HANDLER ---
+  // Iterate through content to find base64 images, upload them, and replace with WP URLs
+  let finalMarkdown = article.content;
+  const imageRegex = /!\[(.*?)\]\((data:image\/.*?;base64,.*?)\)/g;
+  let match;
+  const uploads = [];
+  
+  // Find all images first
+  while ((match = imageRegex.exec(article.content)) !== null) {
+      uploads.push({ fullMatch: match[0], alt: match[1], data: match[2] });
+  }
+
+  if (uploads.length > 0) {
+      console.log(`Found ${uploads.length} generated images. Uploading to WordPress Media Library...`);
+      for (const item of uploads) {
+          try {
+              const wpImageUrl = await uploadImageToWordPress(item.data, item.alt, wpConfig);
+              // Replace the huge base64 string with the nice WP URL
+              finalMarkdown = finalMarkdown.replace(item.data, wpImageUrl);
+          } catch (e) {
+              console.warn(`Failed to upload image: ${item.alt}. Removing from content to prevent errors.`);
+              // If upload fails, strip the image to save the text content at least
+              finalMarkdown = finalMarkdown.replace(item.fullMatch, `> [Image upload failed for: ${item.alt}]`);
+          }
+      }
+  }
+
+  // Convert content with robust parser (handles tables, lists, headers)
+  const htmlContent = convertMarkdownToHtml(finalMarkdown);
+
+  if (!htmlContent) throw new Error("Content generation resulted in empty HTML.");
+
+  // Prepare payload
+  const postData: any = {
+    title: article.title,
+    content: htmlContent,
+    status: status, // Use the selected status (draft, publish, pending, future)
+    excerpt: article.metaDescription,
+    slug: article.slug,
+  };
+  
+  // Handle scheduling (only relevant if status is 'future')
+  if (status === 'future' && scheduledDate) {
+      // Ensure strict ISO 8601 with seconds (YYYY-MM-DDTHH:mm:ss) for WordPress API
+      // If input is YYYY-MM-DDTHH:mm (16 chars), we append :00
+      if (scheduledDate.length <= 16) {
+          postData.date = `${scheduledDate}:00`;
+      } else {
+          postData.date = scheduledDate;
+      }
+  }
+  
+  if (categoryId) {
+    postData.categories = [categoryId];
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${authString}`
+      },
+      body: JSON.stringify(postData)
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.message || `WordPress Error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.link || "Published successfully";
+  } catch (error) {
+    console.error("WP Publish Error:", error);
+    throw error;
+  }
+};
+
 // --- HELPER FUNCTIONS ---
 
 const buildArticlePrompt = (config: SEOConfig): string => {
   const targetRepetition = config.type === ArticleType.PILLAR ? '60' : '15';
 
-  const structureInstruction = config.type === ArticleType.PILLAR 
-    ? `
-    **PILLAR ARTICLE STRUCTURE (MUST FOLLOW):**
-    1. **The Hook**: A story or strong statement. No boring definitions.
-    2. **Deep Dive (What & Why)**: Explain the concept simply but deeply.
-    3. **Strategy / How-To Guide**: Step-by-step executable advice. Use numbered lists.
-    4. **Comparison / Tools**: Create a Markdown Table comparing top options/strategies.
-    5. **Advanced Tips**: Expert advice that others don't share.
-    6. **Common Mistakes**: What to avoid.
-    7. **FAQ**: Answer 3 real user questions.
-    
-    **ALIGNMENT**: Use these specific themes for your H2 headers:
-    ${config.satelliteThemes ? config.satelliteThemes.map(t => `- ${t}`).join('\n') : 'No specific alignment required.'}
-
-    **LENGTH GOAL**: Write as much as possible (aim for 5000 words). Do not stop early.
-    ` 
-    : `
-    **SATELLITE STRUCTURE**:
-    - Context: This is a satellite article for the Pillar Topic: "${config.relatedPillarTopic}".
-    - Answer the specific question immediately.
-    - Give actionable steps.
-    - Link back to the main topic context.
-    `;
+  // Determine structure instructions based on Template Selection or Type
+  let structureInstruction = "";
+  
+  if (config.templateId) {
+    const selectedTemplate = ARTICLE_TEMPLATES.find(t => t.id === config.templateId);
+    if (selectedTemplate) {
+      structureInstruction = `
+      **TEMPLATE MODE ACTIVE: ${selectedTemplate.label}**
+      Tone Goal: ${selectedTemplate.defaultTone}
+      
+      ${selectedTemplate.structureInstruction}
+      
+      **NOTE:** The H2 headers above are required structure. Adapt the content to the topic "${config.topic}".
+      `;
+    }
+  } else {
+    // Default fallback logic if no template selected
+    structureInstruction = config.type === ArticleType.PILLAR 
+      ? `
+      **PILLAR ARTICLE STRUCTURE (MUST FOLLOW):**
+      1. **The Hook**: A story or strong statement. No boring definitions.
+      2. **Deep Dive (What & Why)**: Explain the concept simply but deeply.
+      3. **Strategy / How-To Guide**: Step-by-step executable advice. Use numbered lists.
+      4. **Comparison / Tools**: Create a Markdown Table comparing top options/strategies.
+      5. **Advanced Tips**: Expert advice that others don't share.
+      6. **Common Mistakes**: What to avoid.
+      7. **FAQ**: Answer 3 real user questions.
+      
+      **ALIGNMENT**: Use these specific themes for your H2 headers:
+      ${config.satelliteThemes ? config.satelliteThemes.map(t => `- ${t}`).join('\n') : 'No specific alignment required.'}
+  
+      **LENGTH GOAL**: Write as much as possible (aim for 5000 words). Do not stop early.
+      ` 
+      : `
+      **SATELLITE STRUCTURE**:
+      - Context: This is a satellite article for the Pillar Topic: "${config.relatedPillarTopic}".
+      - Answer the specific question immediately.
+      - Give actionable steps.
+      - Link back to the main topic context.
+      `;
+  }
 
   return `
-    Write a world-class ${config.type} article in Native American English.
+    Write a world-class article in Native American English.
     **Topic**: ${config.topic}
     **Audience**: ${config.audience}
     **Main Keyword**: ${config.mainKeyword}
@@ -498,14 +914,15 @@ const buildArticlePrompt = (config: SEOConfig): string => {
 
     ### IMAGES (MANDATORY - 4 TOTAL):
     Generate exactly 4 images using Markdown syntax.
-    Prepend "Article: ${config.topic} - " to every Alt text.
+    **ASPECT RATIO**: Use strictly 19:9 (1900x900 px).
+    **RULES**: Do NOT include the article title in the image text or Alt text. Keep Alt text purely descriptive of the visual (e.g., "A laptop showing an SEO dashboard", not "Article: SEO Tools - A laptop").
     
     1. **Cover Image**: MUST BE placed immediately after the # H1 Title line.
-       Format: \`![COVER: ${config.topic} - Detailed prompt](https://placehold.co/1200x600/EEE/31343C?text=${encodeURIComponent('COVER: ' + config.mainKeyword.replace(/\s/g, '+'))})\`
+       Format: \`![Visual description of cover](https://placehold.co/1900x900/EEE/31343C)\`
     
-    2. **Body 1**: Inside first major section. \`![Article: ${config.topic} - Detailed prompt](https://placehold.co/800x400/EEE/31343C?text=Wide+Chart)\`
-    3. **Body 2**: Middle of article. \`![Article: ${config.topic} - Detailed prompt](https://placehold.co/600x600/EEE/31343C?text=Square+Diagram)\`
-    4. **Body 3**: Near end. \`![Article: ${config.topic} - Detailed prompt](https://placehold.co/1000x600/EEE/31343C?text=Large+Infographic)\`
+    2. **Body 1**: Inside first major section. \`![Visual description of chart](https://placehold.co/1900x900/EEE/31343C)\`
+    3. **Body 2**: Middle of article. \`![Visual description of diagram](https://placehold.co/1900x900/EEE/31343C)\`
+    4. **Body 3**: Near end. \`![Visual description of infographic](https://placehold.co/1900x900/EEE/31343C)\`
     
     OUTPUT:
     Raw Markdown starting with this JSON block:
@@ -513,13 +930,14 @@ const buildArticlePrompt = (config: SEOConfig): string => {
     {
       "title": "${config.topic.toLowerCase()}",
       "slug": "slug-url",
-      "metaDescription": "seo description"
+      "metaDescription": "seo description",
+      "tags": ["tag1", "tag2", "tag3"]
     }
     \`\`\`
     
     # ${config.topic.toLowerCase()}
     
-    ![COVER: ${config.topic}](...)
+    ![Visual description of cover](...)
     
     [Content starts here...]
   `;
@@ -530,7 +948,8 @@ const parseArticleResponse = (text: string, topic: string) => {
   let metadata = {
     title: topic,
     slug: topic.toLowerCase().replace(/\s+/g, '-'),
-    metaDescription: `A comprehensive guide about ${topic}.`
+    metaDescription: `A comprehensive guide about ${topic}.`,
+    tags: [] as string[]
   };
   let content = text;
   if (jsonMatch) {
@@ -628,86 +1047,116 @@ export const reviewArticleContent = async (content: string, config: SEOConfig): 
 export const generateRealImage = async (prompt: string, aspectRatio: string = '16:9'): Promise<string> => {
   const client = getAIClient();
   let lastError;
+  let base64Result: string | null = null;
+  
+  // Handle non-standard aspect ratios for the API
+  // 19:9 is not a standard supported ratio for Gemini/Imagen APIs, mapping to 16:9 to ensure success
+  let apiAspectRatio = aspectRatio;
+  if (aspectRatio === '19:9') {
+      console.log("Mapping non-standard 19:9 aspect ratio to 16:9 for API compatibility.");
+      apiAspectRatio = '16:9';
+  }
 
   // 1. Try Imagen 3 (Standard)
   try {
-    console.log("Attempting image generation with model: imagen-3.0-generate-001");
+    console.log(`Attempting image generation with model: imagen-3.0-generate-001 (Ratio: ${apiAspectRatio})`);
     const response = await client.models.generateImages({
       model: 'imagen-3.0-generate-001',
       prompt: prompt,
-      config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/jpeg' },
+      config: { numberOfImages: 1, aspectRatio: apiAspectRatio, outputMimeType: 'image/jpeg' },
     });
     const base64String = response.generatedImages?.[0]?.image?.imageBytes;
-    if (base64String) return `data:image/jpeg;base64,${base64String}`;
+    if (base64String) base64Result = `data:image/jpeg;base64,${base64String}`;
   } catch (error) {
     console.warn("Imagen 3 failed:", error);
     lastError = error;
   }
 
   // 2. Try Gemini 3 Pro Image Preview (High Quality Content Gen with imageConfig)
-  try {
-    console.log("Attempting image generation with model: gemini-3-pro-image-preview");
-    const response = await client.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
-      contents: { parts: [{ text: prompt }] },
-      config: {
-        imageConfig: {
-            aspectRatio: aspectRatio, 
-            imageSize: "1K"
+  if (!base64Result) {
+    try {
+      console.log(`Attempting image generation with model: gemini-3-pro-image-preview (Ratio: ${apiAspectRatio})`);
+      const response = await client.models.generateContent({
+        model: 'gemini-3-pro-image-preview',
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          imageConfig: {
+              aspectRatio: apiAspectRatio, 
+              imageSize: "1K"
+          }
         }
-      }
-    });
+      });
 
-    if (response.candidates && response.candidates.length > 0) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-           return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+      if (response.candidates && response.candidates.length > 0) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+             base64Result = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+             break;
+          }
         }
       }
+    } catch (error) {
+      console.warn("Gemini 3 Pro Image failed:", error);
+      lastError = error;
     }
-  } catch (error) {
-    console.warn("Gemini 3 Pro Image failed:", error);
-    lastError = error;
   }
 
   // 3. Try Gemini 2.5 Flash Image (Fallback using generateContent)
-  try {
-    console.log("Attempting image generation with model: gemini-2.5-flash-image");
-    // Nano Banana uses generateContent. We make the prompt explicit.
-    const enhancedPrompt = `Generate a photorealistic image of: ${prompt}`;
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: enhancedPrompt }] },
-    });
+  if (!base64Result) {
+    try {
+      console.log("Attempting image generation with model: gemini-2.5-flash-image");
+      // Nano Banana uses generateContent. We make the prompt explicit.
+      const enhancedPrompt = `Generate a photorealistic image of: ${prompt}`;
+      const response = await client.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts: [{ text: enhancedPrompt }] },
+      });
 
-    if (response.candidates && response.candidates.length > 0) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-           return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+      if (response.candidates && response.candidates.length > 0) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+             base64Result = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+             break;
+          }
         }
       }
+    } catch (error) {
+      console.warn("Gemini Flash Image failed:", error);
+      lastError = error;
     }
-  } catch (error) {
-    console.warn("Gemini Flash Image failed:", error);
-    lastError = error;
   }
 
   // 4. Try Imagen 4 (Premium Fallback)
-  try {
-    console.log("Attempting image generation with model: imagen-4.0-generate-001");
-    const response = await client.models.generateImages({
-      model: 'imagen-4.0-generate-001',
-      prompt: prompt,
-      config: { numberOfImages: 1, aspectRatio: aspectRatio, outputMimeType: 'image/jpeg' },
-    });
-    const base64String = response.generatedImages?.[0]?.image?.imageBytes;
-    if (base64String) return `data:image/jpeg;base64,${base64String}`;
-  } catch (error) {
-    console.warn("Imagen 4 failed:", error);
-    lastError = error;
+  if (!base64Result) {
+    try {
+      console.log(`Attempting image generation with model: imagen-4.0-generate-001 (Ratio: ${apiAspectRatio})`);
+      const response = await client.models.generateImages({
+        model: 'imagen-4.0-generate-001',
+        prompt: prompt,
+        config: { numberOfImages: 1, aspectRatio: apiAspectRatio, outputMimeType: 'image/jpeg' },
+      });
+      const base64String = response.generatedImages?.[0]?.image?.imageBytes;
+      if (base64String) base64Result = `data:image/jpeg;base64,${base64String}`;
+    } catch (error) {
+      console.warn("Imagen 4 failed:", error);
+      lastError = error;
+    }
   }
 
-  throw lastError || new Error("Image generation failed on all models.");
+  if (!base64Result) {
+    throw lastError || new Error("Image generation failed on all models.");
+  }
+
+  // --- UPLOAD TO BLOB IF CONFIGURED ---
+  try {
+    const blob = await base64ToBlob(base64Result);
+    const filename = `img-${Date.now()}.png`;
+    const blobUrl = await uploadToBlob(blob, filename);
+    return blobUrl;
+  } catch (e) {
+    console.warn("Failed to upload to blob, returning base64", e);
+    return base64Result;
+  }
 };
 
 export const generateVideo = async (prompt: string): Promise<string> => {
@@ -727,7 +1176,15 @@ export const generateVideo = async (prompt: string): Promise<string> => {
     const apiKey = getApiKey();
     const response = await fetch(`${downloadLink}&key=${apiKey}`);
     const blob = await response.blob();
-    return URL.createObjectURL(blob);
+    
+    // Upload to Blob
+    try {
+        const filename = `vid-${Date.now()}.mp4`;
+        const blobUrl = await uploadToBlob(blob, filename);
+        return blobUrl;
+    } catch (e) {
+        return URL.createObjectURL(blob);
+    }
   } catch (error) {
     console.error("Error generating video:", error);
     throw error;
@@ -771,44 +1228,45 @@ export const generateSpeech = async (text: string, voice: string = 'Kore'): Prom
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: text }] }],
       config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+        responseModalities: [Modality.AUDIO], 
+        speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voice },
+            },
+        },
       },
     });
+
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) throw new Error("No audio data generated");
+    if (!base64Audio) throw new Error("No audio generated");
+
     const bytes = decodeBase64ToBytes(base64Audio);
+    // The model output is raw PCM, so we wrap it in WAV container.
     const blob = injectWavHeader(bytes, 24000);
-    return URL.createObjectURL(blob);
+    
+    // Upload to Blob
+    try {
+        const filename = `audio-${Date.now()}.wav`;
+        const blobUrl = await uploadToBlob(blob, filename);
+        return blobUrl;
+    } catch (e) {
+        return URL.createObjectURL(blob);
+    }
   } catch (error) {
     console.error("Error generating speech:", error);
     throw error;
   }
 };
 
-export const generateAudioMimic = async (audioBase64: string, textToSay: string): Promise<string> => {
-  try {
+export const generateAudioMimic = async (base64RefAudio: string, mimeType: string, textToSpeak: string): Promise<string> => {
+   try {
     const client = getAIClient();
-    // Step 1: Analyze audio and generate text response (Audio Input -> Text Output)
-    // using standard Flash model which supports audio input.
-    const analyzeResponse = await client.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: {
-        parts: [
-          { inlineData: { mimeType: "audio/mp3", data: audioBase64 } },
-          { text: `Listen to the voice tone and style in this audio. Then, generate a response text that matches the persona/style but says exactly: "${textToSay}". Return ONLY the text.` }
-        ]
-      }
-    });
-    
-    const generatedText = analyzeResponse.text;
-    if (!generatedText) throw new Error("Could not analyze audio or generate text response.");
+    // Reverting to the logic that worked: Flash Native Audio Preview if available, else TTS.
+    // But since user reported 404, we stick to TTS fallback logic.
+    return await generateSpeech(textToSpeak, 'Kore'); 
 
-    // Step 2: Convert the generated text to speech using TTS model
-    // This mimics the 'response' part, although voice cloning itself isn't supported directly via API this way yet.
-    return await generateSpeech(generatedText, 'Puck');
   } catch (error) {
-    console.error("Error generating audio mimic (Fallback):", error);
+    console.error("Error generating mimic audio:", error);
     throw error;
   }
 };

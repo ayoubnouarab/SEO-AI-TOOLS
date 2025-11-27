@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider, TopicSuggestion, ChatMessage } from '../types';
-import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent, refineArticleContent } from '../services/geminiService';
-import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle, MessageSquare, Send, Bot } from 'lucide-react';
+import { ArticleType, SEOConfig, GeneratedContent, LogMessage, ClusterPlan, ArticleVersion, AIProvider, TopicSuggestion, ChatMessage, WordPressConfig, WordPressCategory } from '../types';
+import { generateArticleContent, reviewArticleContent, performSeoResearch, generateClusterPlan, generateRealImage, suggestTopicFromNiche, rewriteContent, refineArticleContent, publishToWordPress, fetchWordPressCategories, ARTICLE_TEMPLATES } from '../services/geminiService';
+import { Wand2, RefreshCw, FileSearch, Copy, Check, ClipboardCopy, Search, Layers, Database, Image as ImageIcon, Palette, Download, X, Zap, History, RotateCcw, Lightbulb, Edit, Eye, Sparkles, Cpu, Key, ArrowRightCircle, MessageSquare, Send, Bot, Tag, Globe, UploadCloud, FolderTree, LayoutTemplate, CalendarClock, List } from 'lucide-react';
 import { SeoChecklist } from './SeoChecklist';
 
 interface EditorProps {
@@ -18,7 +18,8 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
     secondaryKeywords: [],
     type: ArticleType.SATELLITE,
     provider: 'GEMINI', // Default
-    relatedPillarTopic: ''
+    relatedPillarTopic: '',
+    templateId: '' // Default to no template
   });
 
   // API Keys State
@@ -63,7 +64,7 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
   const [detectedImages, setDetectedImages] = useState<{alt: string, url: string, index: number}[]>([]);
   const [isGeneratingImage, setIsGeneratingImage] = useState<number | null>(null); // Index of image being generated
   const [isBatchGenerating, setIsBatchGenerating] = useState(false);
-  const [selectedAspectRatio, setSelectedAspectRatio] = useState('16:9');
+  const [selectedAspectRatio, setSelectedAspectRatio] = useState('19:9');
 
   // History State
   const [showHistory, setShowHistory] = useState(false);
@@ -74,9 +75,31 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
   const [isChatThinking, setIsChatThinking] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
+  // WordPress State
+  const [showWPModal, setShowWPModal] = useState(false);
+  const [wpConfig, setWpConfig] = useState<WordPressConfig>({
+    siteUrl: '',
+    username: '',
+    applicationPassword: ''
+  });
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [wpCategories, setWpCategories] = useState<WordPressCategory[]>([]);
+  const [selectedWpCategory, setSelectedWpCategory] = useState<string>('');
+  const [isFetchingCategories, setIsFetchingCategories] = useState(false);
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [wpStatus, setWpStatus] = useState('draft');
+
   // Derived state for the currently viewed article
   const currentArticle = articles.find(a => a.id === activeArticleId) || null;
   const coverImage = detectedImages.length > 0 ? detectedImages[0].url : null;
+
+  // Load WP Config from local storage
+  useEffect(() => {
+    const savedWpConfig = localStorage.getItem('seo_tool_wp_config');
+    if (savedWpConfig) {
+      setWpConfig(JSON.parse(savedWpConfig));
+    }
+  }, []);
 
   // Detect images in current article whenever it changes
   useEffect(() => {
@@ -344,8 +367,8 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
     addLog(`Generating real image (${selectedAspectRatio}) for: "${imgData.alt}"...`);
     
     try {
-      // Ensure Niche context is passed to prompt by prepending topic
-      const prompt = `Article: ${currentArticle.title} - ${imgData.alt}`;
+      // Prompt is simply the alt text (descriptive visual)
+      const prompt = imgData.alt;
       const base64Image = await generateRealImage(prompt, selectedAspectRatio);
       
       // Replace in content
@@ -389,8 +412,8 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
       const results = await Promise.all(targets.map(async (img) => {
         try {
           addLog(`Generating image: "${img.alt}"...`);
-          // Ensure Niche context is passed to prompt by prepending topic
-          const prompt = `Article: ${currentArticle.title} - ${img.alt}`;
+          // Prompt is simply the alt text
+          const prompt = img.alt;
           const base64 = await generateRealImage(prompt, selectedAspectRatio);
           return { index: img.index, base64, success: true };
         } catch (e) {
@@ -418,6 +441,48 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
       addLog('Batch generation encountered an error.', 'error');
     } finally {
       setIsBatchGenerating(false);
+    }
+  };
+
+  // --- WORDPRESS HANDLERS ---
+  const handleWpSaveConfig = () => {
+    localStorage.setItem('seo_tool_wp_config', JSON.stringify(wpConfig));
+    addLog('WordPress configuration saved.', 'success');
+  };
+
+  const handleFetchCategories = async () => {
+    setIsFetchingCategories(true);
+    try {
+        const categories = await fetchWordPressCategories(wpConfig);
+        setWpCategories(categories);
+        addLog(`Fetched ${categories.length} categories from WordPress.`, 'success');
+    } catch (e: any) {
+        addLog(`Failed to fetch categories: ${e.message}`, 'error');
+    } finally {
+        setIsFetchingCategories(false);
+    }
+  };
+
+  const handlePublishToWordpress = async () => {
+    if (!currentArticle) return;
+    
+    if (!wpConfig.siteUrl || !wpConfig.username || !wpConfig.applicationPassword) {
+      addLog('Missing WP Config. Please open settings.', 'error');
+      return;
+    }
+
+    setIsPublishing(true);
+    addLog(`Connecting to WordPress (Status: ${wpStatus})...`);
+
+    try {
+       const categoryId = selectedWpCategory ? parseInt(selectedWpCategory) : undefined;
+       const link = await publishToWordPress(currentArticle, wpConfig, categoryId, wpStatus, scheduledDate);
+       addLog(`Published successfully! Link: ${link}`, 'success');
+       setShowWPModal(false);
+    } catch (e: any) {
+       addLog(`Failed to publish: ${e.message}`, 'error');
+    } finally {
+       setIsPublishing(false);
     }
   };
 
@@ -492,6 +557,7 @@ export const Editor: React.FC<EditorProps> = ({ articles, setArticles }) => {
 
 **Slug:** ${currentArticle.slug}
 **Meta Description:** ${currentArticle.metaDescription}
+**Tags:** ${currentArticle.tags ? currentArticle.tags.join(', ') : ''}
 
 ---
 
@@ -549,7 +615,20 @@ ${currentArticle.content}`;
     // Lists
     html = html.replace(/^\s*-\s+(.*$)/gm, '<li class="ml-4 list-disc text-slate-700 mb-1">$1</li>');
 
-    // Paragraphs
+    // Blockquotes
+    html = html.replace(/^> (.*$)/gm, '<blockquote class="border-l-4 border-blue-500 pl-4 italic text-slate-600 bg-slate-50 p-2 rounded my-4">$1</blockquote>');
+
+    // Tables (Simple replacement for preview only - not full parser)
+    // Matches | col | col | pattern
+    html = html.replace(/\|(.*)\|/g, (match) => {
+        const cells = match.split('|').filter(c => c.trim() !== '');
+        if (match.includes('---')) return ''; // Skip separator line in visual preview
+        return `<tr>${cells.map(c => `<td class="border p-2">${c.trim()}</td>`).join('')}</tr>`;
+    });
+    // Wrap table rows in table tag (heuristic)
+    html = html.replace(/(<tr>.*<\/tr>\n?)+/g, '<div class="overflow-x-auto my-4"><table class="w-full text-sm text-left border-collapse">$1</table></div>');
+
+    // Paragraphs (newlines not already in tags)
     html = html.replace(/\n\n/g, '</p><p class="mb-4 text-slate-700 leading-relaxed">');
     
     return { __html: '<div class="markdown-preview"><p class="mb-4 text-slate-700 leading-relaxed">' + html + '</p></div>' };
@@ -721,7 +800,42 @@ ${currentArticle.content}`;
             )}
           </div>
 
+          {/* Template Selector */}
           {mode === 'SINGLE' && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                <LayoutTemplate size={12} /> Article Template
+              </label>
+              <select
+                className="w-full p-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-2"
+                value={config.templateId || ''}
+                onChange={(e) => {
+                  const selected = ARTICLE_TEMPLATES.find(t => t.id === e.target.value);
+                  setConfig({ 
+                    ...config, 
+                    templateId: e.target.value,
+                    type: ArticleType.PILLAR // Templates are usually pillars/comprehensive
+                  });
+                }}
+              >
+                <option value="">-- No Template (Default Structure) --</option>
+                {ARTICLE_TEMPLATES.map(t => (
+                  <option key={t.id} value={t.id}>{t.label}</option>
+                ))}
+              </select>
+              
+              {config.templateId && (
+                <div className="bg-indigo-50 border border-indigo-100 p-3 rounded text-xs text-indigo-800 mb-3 animate-fade-in">
+                  <p className="font-bold mb-1">
+                    {ARTICLE_TEMPLATES.find(t => t.id === config.templateId)?.label}
+                  </p>
+                  <p>{ARTICLE_TEMPLATES.find(t => t.id === config.templateId)?.description}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mode === 'SINGLE' && !config.templateId && (
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Article Type</label>
               <div className="grid grid-cols-2 gap-2">
@@ -853,8 +967,8 @@ ${currentArticle.content}`;
                   
                   {/* Cover Image Preview Under H1 */}
                   {coverImage && (
-                     <div className="w-full h-64 bg-slate-100 rounded-lg overflow-hidden border border-slate-200 relative group">
-                        <img src={coverImage} alt="Article Cover" className="w-full h-full object-cover" />
+                     <div className="w-full bg-slate-100 rounded-lg overflow-hidden border border-slate-200 relative group">
+                        <img src={coverImage} alt="Article Cover" className="w-full h-auto object-cover" />
                         <div className="absolute bottom-2 right-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded backdrop-blur-sm">
                            Cover Image Preview
                         </div>
@@ -869,6 +983,18 @@ ${currentArticle.content}`;
                   <span className="text-xs text-slate-400 uppercase font-bold">Meta Description</span>
                   <p className="text-sm text-slate-600">{currentArticle.metaDescription}</p>
                 </div>
+                {currentArticle.tags && currentArticle.tags.length > 0 && (
+                   <div className="md:col-span-2">
+                     <span className="text-xs text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Tag size={12}/> SEO Tags</span>
+                     <div className="flex flex-wrap gap-2">
+                        {currentArticle.tags.map(tag => (
+                           <span key={tag} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded border border-slate-200">
+                              #{tag}
+                           </span>
+                        ))}
+                     </div>
+                   </div>
+                )}
               </div>
               <div className="flex gap-2 border-t pt-4">
                 {/* View Mode Toggles */}
@@ -901,6 +1027,13 @@ ${currentArticle.content}`;
                 >
                   {copiedAll ? <Check size={16} className="text-green-600"/> : <ClipboardCopy size={16} />}
                   {copiedAll ? 'All Info' : 'Copy All'}
+                </button>
+                
+                <button
+                    onClick={() => setShowWPModal(true)}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 rounded transition-colors ml-2"
+                >
+                    <Globe size={16} /> Publish to WP
                 </button>
 
                 <div className="ml-auto flex items-center gap-2">
@@ -1123,6 +1256,140 @@ ${currentArticle.content}`;
         </div>
       )}
 
+      {/* WordPress Connect Modal */}
+      {showWPModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
+           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md border border-slate-200 animate-fade-in">
+              <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Globe className="text-blue-600" size={20} /> Connect WordPress
+                  </h3>
+                  <button onClick={() => setShowWPModal(false)} className="text-slate-400 hover:text-slate-600">
+                    <X size={20} />
+                  </button>
+              </div>
+
+              <div className="space-y-4 mb-6">
+                 <div className="bg-blue-50 p-3 rounded text-xs text-blue-800 mb-4 border border-blue-100">
+                    <p>Enter your WordPress REST API credentials. You need an <strong>Application Password</strong>, not your login password.</p>
+                 </div>
+                 
+                 <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Site URL</label>
+                    <input 
+                      type="text" 
+                      placeholder="https://mysite.com"
+                      className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      value={wpConfig.siteUrl}
+                      onChange={(e) => setWpConfig({...wpConfig, siteUrl: e.target.value})}
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Username</label>
+                    <input 
+                      type="text" 
+                      placeholder="admin"
+                      className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      value={wpConfig.username}
+                      onChange={(e) => setWpConfig({...wpConfig, username: e.target.value})}
+                    />
+                 </div>
+                 <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Application Password</label>
+                    <input 
+                      type="password" 
+                      placeholder="abcd efgh ijkl mnop"
+                      className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      value={wpConfig.applicationPassword}
+                      onChange={(e) => setWpConfig({...wpConfig, applicationPassword: e.target.value})}
+                    />
+                 </div>
+
+                 {/* Connect & Fetch Button */}
+                 <button 
+                   onClick={() => { handleWpSaveConfig(); handleFetchCategories(); }}
+                   disabled={isFetchingCategories}
+                   className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg border border-slate-300 text-sm flex items-center justify-center gap-2"
+                 >
+                    {isFetchingCategories ? <RefreshCw className="animate-spin" size={14}/> : <FolderTree size={16}/>}
+                    Save & Fetch Categories
+                 </button>
+
+                 {/* Category Selector */}
+                 {wpCategories.length > 0 && (
+                    <div className="animate-fade-in">
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Select Category</label>
+                       <select 
+                          className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                          value={selectedWpCategory}
+                          onChange={(e) => setSelectedWpCategory(e.target.value)}
+                       >
+                          <option value="">-- Uncategorized / Default --</option>
+                          {wpCategories.map(cat => (
+                             <option key={cat.id} value={cat.id}>{cat.name} ({cat.count})</option>
+                          ))}
+                       </select>
+                    </div>
+                 )}
+
+                 {/* Status Selector */}
+                 <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                            <List size={12} /> Post Status
+                        </label>
+                        <select 
+                            className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                            value={wpStatus}
+                            onChange={(e) => setWpStatus(e.target.value)}
+                        >
+                            <option value="draft">Draft (Brouillon)</option>
+                            <option value="pending">Pending Review</option>
+                            <option value="publish">Publish Now</option>
+                            <option value="future">Schedule</option>
+                        </select>
+                    </div>
+                    
+                    {/* Scheduling (Conditional) */}
+                    {wpStatus === 'future' && (
+                        <div className="animate-fade-in">
+                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                                <CalendarClock size={12} /> Date & Time
+                            </label>
+                            <input 
+                                type="datetime-local"
+                                className="w-full p-2 border border-slate-300 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={scheduledDate}
+                                onChange={(e) => setScheduledDate(e.target.value)}
+                            />
+                        </div>
+                    )}
+                 </div>
+                 {wpStatus === 'future' && !scheduledDate && (
+                    <p className="text-[10px] text-red-500 mt-1">* Date required for scheduling.</p>
+                 )}
+              </div>
+
+              <div className="flex gap-2 justify-end pt-4 border-t border-slate-100">
+                 <button 
+                   onClick={() => setShowWPModal(false)}
+                   className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800"
+                 >
+                   Cancel
+                 </button>
+                 <button 
+                   onClick={handlePublishToWordpress}
+                   disabled={isPublishing || (wpStatus === 'future' && !scheduledDate)}
+                   className="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2 shadow-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                 >
+                   {isPublishing ? <RefreshCw className="animate-spin" size={14}/> : <UploadCloud size={16}/>}
+                   {wpStatus === 'future' ? 'Schedule Post' : wpStatus === 'publish' ? 'Publish Live' : 'Save to WP'}
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
+
       {/* Image Studio Modal */}
       {showImageModal && currentArticle && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-8">
@@ -1156,7 +1423,7 @@ ${currentArticle.content}`;
                   <div className="flex items-center gap-4">
                       <span className="text-sm text-slate-700">Aspect Ratio:</span>
                       <div className="flex gap-2">
-                          {['16:9', '4:3', '1:1', '3:4', '9:16'].map(ratio => (
+                          {['19:9', '16:9', '4:3', '1:1', '3:4', '9:16'].map(ratio => (
                               <button
                                   key={ratio}
                                   onClick={() => setSelectedAspectRatio(ratio)}

@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Image as ImageIcon, Video, Mic, Wand2, RefreshCw, Download, Play, Zap, Upload, FileAudio } from 'lucide-react';
 import { generateRealImage, generateVideo, generateSpeech, generateAudioMimic } from '../services/geminiService';
@@ -5,7 +6,7 @@ import { generateRealImage, generateVideo, generateSpeech, generateAudioMimic } 
 // --- IMAGE GENERATOR VIEW ---
 export const ImageGeneratorView: React.FC = () => {
   const [prompt, setPrompt] = useState('');
-  const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [aspectRatio, setAspectRatio] = useState('19:9');
   const [isGenerating, setIsGenerating] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
 
@@ -47,7 +48,7 @@ export const ImageGeneratorView: React.FC = () => {
             <div>
                <label className="block text-sm font-bold text-slate-700 mb-2">Aspect Ratio</label>
                <div className="flex gap-2">
-                 {['16:9', '4:3', '1:1', '9:16'].map(ratio => (
+                 {['19:9', '16:9', '4:3', '1:1', '9:16'].map(ratio => (
                     <button
                       key={ratio}
                       onClick={() => setAspectRatio(ratio)}
@@ -203,7 +204,7 @@ export const AudioGeneratorView: React.FC = () => {
     setIsGeneratingMimic(true);
     try {
       const base64 = await fileToBase64(mimicFile);
-      const audioUrl = await generateAudioMimic(base64, mimicText);
+      const audioUrl = await generateAudioMimic(base64, mimicFile.type, mimicText);
       setResultAudioMimic(audioUrl);
     } catch (e) {
       console.error(e);

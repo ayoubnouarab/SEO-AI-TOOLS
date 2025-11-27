@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { Editor } from './components/Editor';
@@ -24,6 +23,11 @@ const INITIAL_USERS: User[] = [
     accessId: "write123", 
     name: "Content Writer" 
   },
+  {
+    email: "AYOUB@GMAI.com",
+    accessId: "1234567",
+    name: "Ayoub Owner"
+  }
 ];
 
 const App: React.FC = () => {
@@ -31,18 +35,23 @@ const App: React.FC = () => {
   const [allUsers, setAllUsers] = useState<User[]>(INITIAL_USERS);
   const [loginError, setLoginError] = useState<string | null>(null);
   
-  // Auth View State: 'landing' | 'login' | 'signup'
-  const [authView, setAuthView] = useState<'landing' | 'login' | 'signup'>('landing');
+  // Auth View State: 'landing' | 'login'
+  const [authView, setAuthView] = useState<'landing' | 'login'>('landing');
 
   // Check local storage for persistent login AND custom users
   useEffect(() => {
     // Load custom registered users if any
     const savedUsers = localStorage.getItem('seo_app_all_users');
     if (savedUsers) {
-      setAllUsers(JSON.parse(savedUsers));
+      // Merge initial users with saved users to ensure hardcoded admins always exist
+      const parsedSavedUsers = JSON.parse(savedUsers) as User[];
+      // Filter out initial users from saved to avoid duplicates if structure changed
+      const uniqueSaved = parsedSavedUsers.filter(s => !INITIAL_USERS.some(i => i.email === s.email));
+      setAllUsers([...INITIAL_USERS, ...uniqueSaved]);
     } else {
       // If no custom users, ensure initial users are set
       localStorage.setItem('seo_app_all_users', JSON.stringify(INITIAL_USERS));
+      setAllUsers(INITIAL_USERS);
     }
 
     // Load current logged in user
@@ -65,29 +74,6 @@ const App: React.FC = () => {
     } else {
       setLoginError("Invalid Email or Access ID.");
     }
-  };
-
-  const handleSignup = (name: string, email: string, id: string) => {
-    // Check if user already exists
-    const exists = allUsers.some(u => u.email.toLowerCase() === email.toLowerCase());
-    
-    if (exists) {
-      setLoginError("Account with this email already exists. Please login.");
-      return;
-    }
-
-    const newUser: User = { name, email, accessId: id };
-    const updatedUsers = [...allUsers, newUser];
-    
-    // Update state and persist
-    setAllUsers(updatedUsers);
-    localStorage.setItem('seo_app_all_users', JSON.stringify(updatedUsers));
-    
-    // Auto login
-    setCurrentUser(newUser);
-    setLoginError(null);
-    localStorage.setItem('seo_app_user', JSON.stringify(newUser));
-    setAuthView('landing'); // Reset
   };
 
   const handleLogout = () => {
@@ -132,14 +118,11 @@ const App: React.FC = () => {
         {authView === 'landing' ? (
           <LandingPage 
             onLoginClick={() => setAuthView('login')} 
-            onSignupClick={() => setAuthView('signup')} 
           />
         ) : (
           <Login 
             onLogin={handleLogin} 
-            onSignup={handleSignup} 
             onBack={() => setAuthView('landing')}
-            initialMode={authView === 'signup' ? 'signup' : 'login'}
             error={loginError} 
           />
         )}
