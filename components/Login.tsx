@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Lock, Key, Mail, ArrowRight, ShieldCheck, User as UserIcon, ArrowLeft, AlertTriangle } from 'lucide-react';
 import { hasValidApiKey } from '../services/geminiService';
@@ -50,7 +51,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin, onBack, error }) => {
                 <div>
                    <p className="font-bold">Configuration Error</p>
                    <p className="mt-1">VITE_API_KEY is missing. The app will fail to generate content.</p>
-                   <p className="mt-2 text-white/80">Go to Vercel Settings > Environment Variables and add <strong>VITE_API_KEY</strong>.</p>
+                   <p className="mt-2 text-white/80">Go to Vercel Settings &gt; Environment Variables and add <strong>VITE_API_KEY</strong>.</p>
                 </div>
              </div>
            </div>
